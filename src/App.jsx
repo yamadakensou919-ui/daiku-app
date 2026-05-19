@@ -173,7 +173,7 @@ ${+siteAllowance>0?`<div class="row"><span class="row-label">現場手当</span>
   const w = window.open('','_blank','width=800,height=900');
   w.document.write(html);
   w.document.close();
-  w.onload = ()=>{ w.focus(); w.print(); };
+  w.onload = ()=>{ w.focus(); w.print(); setTimeout(()=>{ const btn=w.document.createElement('button'); btn.textContent='✕ 閉じる'; btn.style.cssText='position:fixed;top:16px;right:16px;z-index:9999;background:#d4a853;color:#0f1423;border:none;border-radius:8px;padding:10px 20px;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;'; btn.onclick=()=>w.close(); w.document.body.appendChild(btn); },500); };
 }
 
 function downloadSitePDF(site,labor,totalCost,gross,rate){
@@ -258,7 +258,61 @@ function downloadSitePDF(site,labor,totalCost,gross,rate){
   const w = window.open('','_blank','width=800,height=900');
   w.document.write(html);
   w.document.close();
-  w.onload = ()=>{ w.focus(); w.print(); };
+  w.onload = ()=>{ w.focus(); w.print(); setTimeout(()=>{ const btn=w.document.createElement('button'); btn.textContent='✕ 閉じる'; btn.style.cssText='position:fixed;top:16px;right:16px;z-index:9999;background:#d4a853;color:#0f1423;border:none;border-radius:8px;padding:10px 20px;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;'; btn.onclick=()=>w.close(); w.document.body.appendChild(btn); },500); };
+}
+
+function downloadScPDF(sc,month,totalCount,totalCost,detail){
+  const today=todayStr();
+  const rows=detail.map((d,i)=>`
+    <tr style="background:${i%2===0?'#14192e':'#19203a'}">
+      <td style="padding:6px 8px;color:#94a3b8;font-size:13px;">${d.date.slice(5)}</td>
+      <td style="padding:6px 8px;color:#82b8e0;font-weight:700;font-size:13px;">${d.dow}</td>
+      <td style="padding:6px 8px;color:#c0c8d8;font-size:13px;">${d.site}</td>
+      <td style="padding:6px 8px;color:#d4a853;font-size:13px;text-align:center;">${d.count}人</td>
+      <td style="padding:6px 8px;text-align:right;color:#e07b4a;font-weight:700;font-size:13px;">¥${d.cost.toLocaleString('ja-JP')}</td>
+    </tr>`).join('');
+  const html=`<!DOCTYPE html>
+<html lang="ja"><head><meta charset="UTF-8">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;800&display=swap');
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:#0f1423;color:#e8eaf0;font-family:'Noto Sans JP',sans-serif;padding:20px;}
+@media print{body{background:#0f1423 !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
+.hl{height:3px;background:#e07b4a;margin-bottom:10px;}
+.lbl{font-size:11px;color:#e07b4a;font-weight:700;letter-spacing:1px;}
+.sub{font-size:12px;color:#94a3b8;}
+.nm{font-size:26px;font-weight:800;color:#f0f2f6;margin:6px 0 2px;}
+.sep{height:1px;background:#ffffff20;margin:10px 0;}
+.row{display:flex;justify-content:space-between;background:#19203a;border-radius:6px;padding:8px 12px;margin-bottom:4px;}
+.rl{font-size:13px;color:#94a3b8;}
+.rv{font-size:13px;font-weight:700;color:#f0f2f6;}
+.tb{background:#e07b4a;border-radius:8px;padding:12px 16px;display:flex;justify-content:space-between;margin:12px 0;}
+.tl{font-size:14px;font-weight:700;color:#0f1423;}
+.tv{font-size:20px;font-weight:800;color:#0f1423;}
+table{width:100%;border-collapse:collapse;margin-top:8px;}
+th{background:#0d1220;color:#e07b4a;font-size:11px;font-weight:700;padding:6px 8px;text-align:left;letter-spacing:1px;}
+.dt{font-size:14px;font-weight:700;color:#e07b4a;margin-top:16px;margin-bottom:6px;}
+</style></head><body>
+<div class="hl"></div>
+<div style="display:flex;justify-content:space-between;align-items:flex-start;">
+  <div><div class="lbl">SUBCONTRACT INVOICE</div>
+  <div class="nm">${sc.company}</div>
+  <div class="sub">担当: ${sc.contact} · ${month.replace('-','年')}月分</div></div>
+  <div style="text-align:right;"><div class="sub">発行 ${today}</div></div>
+</div>
+<div class="sep"></div>
+<div class="row"><span class="rl">日当単価（1人）</span><span class="rv">¥${sc.dailyRate.toLocaleString('ja-JP')}</span></div>
+<div class="row"><span class="rl">延べ稼働人数</span><span class="rv">${totalCount}人</span></div>
+<div class="tb"><span class="tl">支払合計</span><span class="tv">¥${totalCost.toLocaleString('ja-JP')}</span></div>
+<div class="dt">稼働明細 (${detail.length}日)</div>
+<table><thead><tr>
+<th>日付</th><th>曜日</th><th>現場</th><th style="text-align:center;">人数</th><th style="text-align:right;">金額</th>
+</tr></thead><tbody>${rows}</tbody></table>
+</body></html>`;
+  const w=window.open('','_blank','width=800,height=900');
+  w.document.write(html);
+  w.document.close();
+  w.onload=()=>{w.focus();w.print();setTimeout(()=>{const btn=w.document.createElement('button');btn.textContent='✕ 閉じる';btn.style.cssText='position:fixed;top:16px;right:16px;z-index:9999;background:#e07b4a;color:#0f1423;border:none;border-radius:8px;padding:10px 20px;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;';btn.onclick=()=>w.close();w.document.body.appendChild(btn);},500);};
 }
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
@@ -924,10 +978,12 @@ function PayslipView({summary,month,onClose}) {
 
 // ── 外注費明細 ────────────────────────────────────────────────────────────────
 function ScInvoiceView({summary,month,onClose}) {
+  const [saving,setSaving]=useState(false);
   const {sc,totalCount,totalCost,detail}=summary;
   return (
     <div style={{minHeight:"100vh",background:C.bg,fontFamily:"'Noto Sans JP',sans-serif"}}>
-      <BackHeader title="外注費明細" onClose={onClose}/>
+      <BackHeader title="外注費明細" onClose={onClose}
+        right={<PdfButton onClick={async()=>{setSaving(true);try{downloadScPDF(sc,month,totalCount,totalCost,detail);}catch(e){alert(e.message);}setSaving(false);}} saving={saving}/>}/>
       <div style={{padding:"16px 16px 100px"}}>
         <div style={{background:`linear-gradient(135deg,${C.bgCard},${C.bgDeep})`,border:`1px solid ${C.orange}40`,borderRadius:20,padding:"22px 20px",marginBottom:16,position:"relative",overflow:"hidden"}}>
           <div style={{position:"absolute",top:10,right:18,fontSize:10,color:C.orange,fontWeight:700,letterSpacing:2}}>SUBCONTRACT</div>
