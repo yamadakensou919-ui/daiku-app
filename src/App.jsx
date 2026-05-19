@@ -102,88 +102,163 @@ function getMonthDays(ym) {
 }
 function getDow(d){return["日","月","火","水","木","金","土"][new Date(d).getDay()];}
 
-// ── jsPDF ─────────────────────────────────────────────────────────────────────
-let _jsPDF=null;
-async function loadJsPDF(){
-  if(_jsPDF)return _jsPDF;
-  return new Promise((res,rej)=>{
-    const s=document.createElement("script");
-    s.src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
-    s.onload=()=>{_jsPDF=window.jspdf.jsPDF;res(_jsPDF);};
-    s.onerror=rej;
-    document.head.appendChild(s);
-  });
+// ── HTML-based PDF (browser print) — supports full Japanese ──
+function downloadPayslipPDF(emp,month,baseWage,sundayBonus,sundayDays,siteAllowance,grandTotal,detail){
+  const today = todayStr();
+  const rows = detail.map((d,i)=>`
+    <tr style="background:${d.isSun?'#2a0d0d':i%2===0?'#14192e':'#19203a'}">
+      <td style="padding:6px 8px;color:${d.isSun?'#e05c5c':'#b0b8cc'};font-size:13px;">${d.date.slice(5)}</td>
+      <td style="padding:6px 8px;color:${d.isSun?'#e05c5c':'#8892aa'};font-weight:700;font-size:13px;">${d.dow}</td>
+      <td style="padding:6px 8px;color:#c0c8d8;font-size:13px;">${d.site}</td>
+      <td style="padding:6px 8px;color:${d.isSun?'#e05c5c':'#b0b8cc'};font-size:12px;">${d.hours===1?'全日':'半日'}</td>
+      <td style="padding:6px 8px;text-align:right;color:#dce0e8;font-size:13px;">¥${(d.wage+d.bonus).toLocaleString('ja-JP')}</td>
+    </tr>`).join('');
+  const html = `<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;800&display=swap');
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{background:#0f1423;color:#e8eaf0;font-family:'Noto Sans JP',sans-serif;padding:20px;}
+  @media print{body{background:#0f1423 !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
+  .header-line{height:3px;background:#d4a853;margin-bottom:10px;}
+  .label{font-size:11px;color:#d4a853;font-weight:700;letter-spacing:1px;}
+  .sub{font-size:12px;color:#94a3b8;}
+  .name{font-size:26px;font-weight:800;color:#f0f2f6;margin:6px 0 2px;}
+  .role{font-size:13px;color:#7888a0;margin-bottom:14px;}
+  .sep{height:1px;background:#d4a85340;margin:10px 0;}
+  .row{display:flex;justify-content:space-between;align-items:center;background:#19203a;border-radius:6px;padding:8px 12px;margin-bottom:4px;}
+  .row.sun{background:#2a0d0d;}
+  .row-label{font-size:13px;color:#94a3b8;}
+  .row-val{font-size:13px;font-weight:700;color:#f0f2f6;}
+  .total-box{background:#d4a853;border-radius:8px;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;margin:12px 0;}
+  .total-label{font-size:14px;font-weight:700;color:#0f1423;}
+  .total-val{font-size:20px;font-weight:800;color:#0f1423;}
+  table{width:100%;border-collapse:collapse;margin-top:8px;}
+  th{background:#0d1220;color:#d4a853;font-size:11px;font-weight:700;padding:6px 8px;text-align:left;letter-spacing:1px;}
+  .detail-title{font-size:14px;font-weight:700;color:#d4a853;margin-top:16px;margin-bottom:6px;}
+</style>
+</head>
+<body>
+<div class="header-line"></div>
+<div style="display:flex;justify-content:space-between;align-items:flex-start;">
+  <div>
+    <div class="label">PAYSLIP</div>
+    <div class="name">${emp.name}</div>
+    <div class="role">${emp.role}</div>
+  </div>
+  <div style="text-align:right;">
+    <div class="sub">${month.replace('-','年')}月分</div>
+    <div class="sub">発行 ${today}</div>
+  </div>
+</div>
+<div class="sep"></div>
+<div class="sub" style="margin-bottom:10px;">日給 ¥${emp.dailyWage.toLocaleString('ja-JP')} × ${detail.reduce((a,d)=>a+d.hours,0)}日</div>
+<div class="row"><span class="row-label">基本給</span><span class="row-val">¥${baseWage.toLocaleString('ja-JP')}</span></div>
+${sundayBonus>0?`<div class="row sun"><span class="row-label" style="color:#d4a853;">休日出勤手当（日曜${sundayDays}日）</span><span class="row-val" style="color:#d4a853;">+¥${sundayBonus.toLocaleString('ja-JP')}</span></div>`:''}
+${+siteAllowance>0?`<div class="row"><span class="row-label">現場手当</span><span class="row-val">+¥${(+siteAllowance).toLocaleString('ja-JP')}</span></div>`:''}
+<div class="total-box">
+  <span class="total-label">支給合計</span>
+  <span class="total-val">¥${grandTotal.toLocaleString('ja-JP')}</span>
+</div>
+<div class="detail-title">出勤明細</div>
+<table>
+  <thead><tr>
+    <th>日付</th><th>曜日</th><th>現場</th><th>区分</th><th style="text-align:right;">金額</th>
+  </tr></thead>
+  <tbody>${rows}</tbody>
+</table>
+</body></html>`;
+  const w = window.open('','_blank','width=800,height=900');
+  w.document.write(html);
+  w.document.close();
+  w.onload = ()=>{ w.focus(); w.print(); };
 }
-async function downloadPayslipPDF(emp,month,baseWage,sundayBonus,sundayDays,siteAllowance,grandTotal,detail){
-  const JsPDF=await loadJsPDF();
-  const doc=new JsPDF({orientation:"portrait",unit:"mm",format:"a4"});
-  const W=210,M=18;let y=20;
-  const line=(yy,bold)=>{doc.setDrawColor(bold?60:200);doc.setLineWidth(bold?0.5:0.2);doc.line(M,yy,W-M,yy);};
-  const txt=(t,x,yy,sz=10,bold=false,rgb=[50,50,50])=>{doc.setFontSize(sz);doc.setFont("helvetica",bold?"bold":"normal");doc.setTextColor(...rgb);doc.text(String(t),x,yy);};
-  const rtxt=(t,x,yy,sz=10,bold=false,rgb=[50,50,50])=>{doc.setFontSize(sz);doc.setFont("helvetica",bold?"bold":"normal");doc.setTextColor(...rgb);doc.text(String(t),x,yy,{align:"right"});};
-  doc.setFillColor(15,20,35);doc.rect(0,0,W,297,"F");
-  doc.setFillColor(212,168,83);doc.rect(M,y,W-M*2,1,"F");y+=6;
-  txt("PAYSLIP",M,y,8,false,[212,168,83]);
-  rtxt(month.replace("-","年")+"月分",W-M,y,8,false,[150,150,150]);y+=8;
-  txt(emp.name,M,y,20,true,[240,240,240]);y+=8;
-  txt(emp.role,M,y,9,false,[130,130,130]);y+=10;
-  doc.setFillColor(212,168,83);doc.rect(M,y,W-M*2,0.5,"F");y+=8;
-  txt(`日給 ¥${emp.dailyWage.toLocaleString("ja-JP")} × ${detail.reduce((a,d)=>a+d.hours,0)}日`,M,y,9,false,[180,180,180]);
-  rtxt(`発行 ${todayStr()}`,W-M,y,8,false,[120,120,120]);y+=9;
-  doc.setFillColor(25,32,50);doc.roundedRect(M,y,W-M*2,8,1,1,"F");
-  txt("基本給",M+4,y+5.5,9,false,[180,180,180]);rtxt("¥"+baseWage.toLocaleString("ja-JP"),W-M-4,y+5.5,9,true,[240,240,240]);y+=10;
-  if(sundayBonus>0){doc.setFillColor(30,20,10);doc.roundedRect(M,y,W-M*2,8,1,1,"F");txt(`休日出勤手当（日曜${sundayDays}日）`,M+4,y+5.5,8,false,[200,150,80]);rtxt("+¥"+sundayBonus.toLocaleString("ja-JP"),W-M-4,y+5.5,8,true,[212,168,83]);y+=10;}
-  if(+siteAllowance>0){doc.setFillColor(25,32,50);doc.roundedRect(M,y,W-M*2,8,1,1,"F");txt("現場手当",M+4,y+5.5,9,false,[180,180,180]);rtxt("+¥"+(+siteAllowance).toLocaleString("ja-JP"),W-M-4,y+5.5,9,true,[240,240,240]);y+=10;}
-  y+=2;doc.setFillColor(212,168,83);doc.roundedRect(M,y,W-M*2,12,2,2,"F");
-  txt("支給合計",M+5,y+8,11,true,[15,20,35]);rtxt("¥"+grandTotal.toLocaleString("ja-JP"),W-M-5,y+8,14,true,[15,20,35]);y+=18;
-  doc.setFillColor(212,168,83);doc.rect(M,y,W-M*2,0.5,"F");y+=8;
-  txt("出勤明細",M,y,10,true,[212,168,83]);y+=7;
-  detail.forEach((d,i)=>{
-    if(y>272){doc.addPage();doc.setFillColor(15,20,35);doc.rect(0,0,W,297,"F");y=20;}
-    const bg=d.isSun?[40,15,15]:i%2===0?[20,27,45]:[25,32,50];
-    doc.setFillColor(...bg);doc.rect(M,y,W-M*2,8,"F");
-    const dc=d.isSun?[220,80,80]:[180,180,180];
-    txt(d.date.slice(5),M+2,y+5.5,8,false,dc);txt(d.dow,M+18,y+5.5,8,true,dc);
-    txt(d.site,M+28,y+5.5,8,false,[200,200,200]);
-    txt(d.hours===1?"全日":"半日",M+90,y+5.5,7,false,dc);
-    rtxt("¥"+(d.wage+d.bonus).toLocaleString("ja-JP"),W-M-2,y+5.5,8,false,[220,220,220]);
-    y+=9;
-  });
-  doc.save(`給与明細_${emp.name}_${month}.pdf`);
-}
-async function downloadSitePDF(site,labor,totalCost,gross,rate){
-  const JsPDF=await loadJsPDF();
-  const doc=new JsPDF({orientation:"portrait",unit:"mm",format:"a4"});
-  const W=210,M=18;let y=20;
-  const gc=gross>=0?[92,201,138]:[220,80,80];
-  const line=(yy,bold)=>{doc.setDrawColor(bold?60:200);doc.setLineWidth(bold?0.5:0.2);doc.line(M,yy,W-M,yy);};
-  const txt=(t,x,yy,sz=10,bold=false,rgb=[50,50,50])=>{doc.setFontSize(sz);doc.setFont("helvetica",bold?"bold":"normal");doc.setTextColor(...rgb);doc.text(String(t),x,yy);};
-  const rtxt=(t,x,yy,sz=10,bold=false,rgb=[50,50,50])=>{doc.setFontSize(sz);doc.setFont("helvetica",bold?"bold":"normal");doc.setTextColor(...rgb);doc.text(String(t),x,yy,{align:"right"});};
-  doc.setFillColor(15,20,35);doc.rect(0,0,W,297,"F");
-  doc.setFillColor(...gc);doc.rect(M,y,W-M*2,1,"F");y+=6;
-  txt("SITE REPORT",M,y,8,false,gc);rtxt(`発行 ${todayStr()}`,W-M,y,8,false,[150,150,150]);y+=8;
-  txt(site.name,M,y,20,true,[240,240,240]);y+=8;
-  txt(`完了年月: ${site.month}`,M,y,9,false,[130,130,130]);y+=10;
-  doc.setFillColor(...gc);doc.rect(M,y,W-M*2,0.5,"F");y+=8;
-  txt("売　上",M,y,10,true,[212,168,83]);y+=7;
-  [["請負金額（税抜）",site.contract],["請負金額（税込）",site.contractTax||Math.round((+site.contract||0)*1.1)]].forEach(([lbl,val],i)=>{
-    doc.setFillColor(i%2===0?20:25,i%2===0?27:32,i%2===0?45:50);doc.rect(M,y,W-M*2,8,"F");
-    txt(lbl,M+4,y+5.5,9,false,[180,180,180]);rtxt("¥"+(+val||0).toLocaleString("ja-JP"),W-M-4,y+5.5,9,true,[240,240,240]);y+=9;
-  });
-  y+=4;txt("直接経費",M,y,10,true,[212,168,83]);y+=7;
-  const costRows=[["人件費（従業員）",labor.empWage,[130,180,220]],["人件費（外注）",labor.scCost,[220,160,100]],...COST_KEYS.map((k,i)=>[k,+site[k]||0,[180,180,180]])];
-  costRows.forEach(([lbl,val,rgb],i)=>{
-    if(!val)return;
-    doc.setFillColor(i%2===0?20:25,i%2===0?27:32,i%2===0?45:50);doc.rect(M,y,W-M*2,8,"F");
-    txt(lbl,M+4,y+5.5,9,false,rgb);rtxt("¥"+val.toLocaleString("ja-JP"),W-M-4,y+5.5,9,true,[230,230,230]);y+=9;
-  });
-  y+=2;doc.setFillColor(30,20,10);doc.roundedRect(M,y,W-M*2,10,1,1,"F");
-  txt("直接経費合計",M+4,y+7,9,true,[212,168,83]);rtxt("¥"+totalCost.toLocaleString("ja-JP"),W-M-4,y+7,10,true,[212,168,83]);y+=16;
-  doc.setFillColor(...(gross>=0?[10,35,20]:[35,10,10]));doc.roundedRect(M,y,W-M*2,18,2,2,"F");
-  doc.setDrawColor(...gc);doc.setLineWidth(0.5);doc.roundedRect(M,y,W-M*2,18,2,2,"S");
-  txt("粗　利　益",M+5,y+8,11,true,[220,220,220]);rtxt("¥"+gross.toLocaleString("ja-JP"),W-M-5,y+8,14,true,gc);
-  txt("粗　利　率",M+5,y+16,9,true,[180,180,180]);rtxt(PCT(rate),W-M-5,y+16,12,true,gc);
-  doc.save(`現場報告書_${site.name}_${site.month}.pdf`);
+
+function downloadSitePDF(site,labor,totalCost,gross,rate){
+  const today = todayStr();
+  const gc = gross>=0?'#5cc98a':'#e05c5c';
+  const gcDk = gross>=0?'#0a2316':'#2a0808';
+  const costRows=[
+    ['人件費（従業員）', labor.empWage, '#82b8e0'],
+    ['人件費（外注）', labor.scCost, '#d4a064'],
+    ...COST_KEYS.map((k,i)=>[k, +site[k]||0, '#b0b8cc'])
+  ].filter(([,v])=>v>0);
+  const costRowsHtml = costRows.map(([lbl,val,rgb],i)=>`
+    <tr style="background:${i%2===0?'#14192e':'#19203a'}">
+      <td style="padding:6px 8px;color:${rgb};font-size:13px;">${lbl}</td>
+      <td style="padding:6px 8px;text-align:right;color:#dce0e8;font-size:13px;">¥${val.toLocaleString('ja-JP')}</td>
+    </tr>`).join('');
+  const html = `<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;800&display=swap');
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{background:#0f1423;color:#e8eaf0;font-family:'Noto Sans JP',sans-serif;padding:20px;}
+  @media print{body{background:#0f1423 !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
+  .header-line{height:3px;margin-bottom:10px;}
+  .label{font-size:11px;font-weight:700;letter-spacing:1px;}
+  .sub{font-size:12px;color:#94a3b8;}
+  .name{font-size:26px;font-weight:800;color:#f0f2f6;margin:6px 0 2px;}
+  .sep{height:1px;background:#ffffff20;margin:10px 0;}
+  .section-title{font-size:14px;font-weight:700;color:#d4a853;margin:14px 0 6px;}
+  table{width:100%;border-collapse:collapse;}
+  th{background:#0d1220;color:#d4a853;font-size:11px;font-weight:700;padding:6px 8px;text-align:left;letter-spacing:1px;}
+  .total-box{background:#2a1a08;border:1px solid #d4a85360;border-radius:6px;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;margin:10px 0;}
+  .total-label{font-size:13px;font-weight:700;color:#d4a853;}
+  .total-val{font-size:16px;font-weight:800;color:#d4a853;}
+  .gross-box{border-radius:8px;padding:14px 16px;display:flex;flex-direction:column;gap:6px;margin-top:12px;}
+  .gross-row{display:flex;justify-content:space-between;align-items:center;}
+</style>
+</head>
+<body>
+<div class="header-line" style="background:${gc};"></div>
+<div style="display:flex;justify-content:space-between;align-items:flex-start;">
+  <div>
+    <div class="label" style="color:${gc};">SITE REPORT</div>
+    <div class="name">${site.name}</div>
+    <div class="sub">完了年月: ${site.month}</div>
+  </div>
+  <div style="text-align:right;">
+    <div class="sub">発行 ${today}</div>
+  </div>
+</div>
+<div class="sep"></div>
+<div class="section-title">売　上</div>
+<table>
+  <thead><tr><th>項目</th><th style="text-align:right;">金額</th></tr></thead>
+  <tbody>
+    <tr style="background:#14192e"><td style="padding:6px 8px;color:#94a3b8;font-size:13px;">請負金額（税抜）</td><td style="padding:6px 8px;text-align:right;color:#f0f2f6;font-weight:700;font-size:13px;">¥${(+site.contract||0).toLocaleString('ja-JP')}</td></tr>
+    <tr style="background:#19203a"><td style="padding:6px 8px;color:#94a3b8;font-size:13px;">請負金額（税込）</td><td style="padding:6px 8px;text-align:right;color:#f0f2f6;font-weight:700;font-size:13px;">¥${(site.contractTax||Math.round((+site.contract||0)*1.1)).toLocaleString('ja-JP')}</td></tr>
+  </tbody>
+</table>
+<div class="section-title">直接経費</div>
+<table>
+  <thead><tr><th>項目</th><th style="text-align:right;">金額</th></tr></thead>
+  <tbody>${costRowsHtml}</tbody>
+</table>
+<div class="total-box">
+  <span class="total-label">直接経費合計</span>
+  <span class="total-val">¥${totalCost.toLocaleString('ja-JP')}</span>
+</div>
+<div class="gross-box" style="background:${gcDk};border:1px solid ${gc}40;">
+  <div class="gross-row">
+    <span style="font-size:15px;font-weight:700;color:#dce0e8;">粗　利　益</span>
+    <span style="font-size:22px;font-weight:800;color:${gc};">¥${gross.toLocaleString('ja-JP')}</span>
+  </div>
+  <div class="gross-row">
+    <span style="font-size:13px;font-weight:700;color:#94a3b8;">粗　利　率</span>
+    <span style="font-size:16px;font-weight:800;color:${gc};">${PCT(rate)}</span>
+  </div>
+</div>
+</body></html>`;
+  const w = window.open('','_blank','width=800,height=900');
+  w.document.write(html);
+  w.document.close();
+  w.onload = ()=>{ w.focus(); w.print(); };
 }
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
