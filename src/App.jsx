@@ -121,7 +121,7 @@ function downloadPayslipPDF(emp,month,baseWage,sundayBonus,sundayDays,siteAllowa
   @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;800&display=swap');
   *{box-sizing:border-box;margin:0;padding:0;}
   body{background:#0f1423;color:#e8eaf0;font-family:'Noto Sans JP',sans-serif;padding:20px;}
-  @media print{body{background:#0f1423 !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
+  @media print{body{background:#0f1423 !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}.no-print{display:none!important;}}
   .header-line{height:3px;background:#d4a853;margin-bottom:10px;}
   .label{font-size:11px;color:#d4a853;font-weight:700;letter-spacing:1px;}
   .sub{font-size:12px;color:#94a3b8;}
@@ -169,11 +169,11 @@ ${+siteAllowance>0?`<div class="row"><span class="row-label">現場手当</span>
   </tr></thead>
   <tbody>${rows}</tbody>
 </table>
-</body></html>`;
+<button onclick="window.close()" style="position:fixed;top:16px;right:16px;z-index:9999;background:#d4a853;color:#0f1423;border:none;border-radius:8px;padding:10px 20px;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;" class="no-print">✕ 閉じる</button></body></html>`;
   const w = window.open('','_blank','width=800,height=900');
   w.document.write(html);
   w.document.close();
-  w.onload = ()=>{ w.focus(); w.print(); setTimeout(()=>{ const btn=w.document.createElement('button'); btn.textContent='✕ 閉じる'; btn.style.cssText='position:fixed;top:16px;right:16px;z-index:9999;background:#d4a853;color:#0f1423;border:none;border-radius:8px;padding:10px 20px;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;'; btn.onclick=()=>w.close(); w.document.body.appendChild(btn); },500); };
+  w.onload = ()=>{ w.focus(); w.print(); };
 }
 
 function downloadSitePDF(site,labor,totalCost,gross,rate){
@@ -198,7 +198,7 @@ function downloadSitePDF(site,labor,totalCost,gross,rate){
   @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;800&display=swap');
   *{box-sizing:border-box;margin:0;padding:0;}
   body{background:#0f1423;color:#e8eaf0;font-family:'Noto Sans JP',sans-serif;padding:20px;}
-  @media print{body{background:#0f1423 !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
+  @media print{body{background:#0f1423 !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}.no-print{display:none!important;}}
   .header-line{height:3px;margin-bottom:10px;}
   .label{font-size:11px;font-weight:700;letter-spacing:1px;}
   .sub{font-size:12px;color:#94a3b8;}
@@ -254,11 +254,11 @@ function downloadSitePDF(site,labor,totalCost,gross,rate){
     <span style="font-size:16px;font-weight:800;color:${gc};">${PCT(rate)}</span>
   </div>
 </div>
-</body></html>`;
+<button onclick="window.close()" style="position:fixed;top:16px;right:16px;z-index:9999;background:#d4a853;color:#0f1423;border:none;border-radius:8px;padding:10px 20px;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;" class="no-print">✕ 閉じる</button></body></html>`;
   const w = window.open('','_blank','width=800,height=900');
   w.document.write(html);
   w.document.close();
-  w.onload = ()=>{ w.focus(); w.print(); setTimeout(()=>{ const btn=w.document.createElement('button'); btn.textContent='✕ 閉じる'; btn.style.cssText='position:fixed;top:16px;right:16px;z-index:9999;background:#d4a853;color:#0f1423;border:none;border-radius:8px;padding:10px 20px;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;'; btn.onclick=()=>w.close(); w.document.body.appendChild(btn); },500); };
+  w.onload = ()=>{ w.focus(); w.print(); };
 }
 
 function downloadScPDF(sc,month,totalCount,totalCost,detail){
@@ -277,7 +277,7 @@ function downloadScPDF(sc,month,totalCount,totalCost,detail){
 @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;800&display=swap');
 *{box-sizing:border-box;margin:0;padding:0;}
 body{background:#0f1423;color:#e8eaf0;font-family:'Noto Sans JP',sans-serif;padding:20px;}
-@media print{body{background:#0f1423 !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
+@media print{body{background:#0f1423 !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}.no-print{display:none!important;}}
 .hl{height:3px;background:#e07b4a;margin-bottom:10px;}
 .lbl{font-size:11px;color:#e07b4a;font-weight:700;letter-spacing:1px;}
 .sub{font-size:12px;color:#94a3b8;}
@@ -308,7 +308,7 @@ th{background:#0d1220;color:#e07b4a;font-size:11px;font-weight:700;padding:6px 8
 <table><thead><tr>
 <th>日付</th><th>曜日</th><th>現場</th><th style="text-align:center;">人数</th><th style="text-align:right;">金額</th>
 </tr></thead><tbody>${rows}</tbody></table>
-</body></html>`;
+<button onclick="window.close()" style="position:fixed;top:16px;right:16px;z-index:9999;background:#d4a853;color:#0f1423;border:none;border-radius:8px;padding:10px 20px;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;" class="no-print">✕ 閉じる</button></body></html>`;
   const w=window.open('','_blank','width=800,height=900');
   w.document.write(html);
   w.document.close();
@@ -668,7 +668,7 @@ function AttendanceTab({sites,employees,subcontractors,attendance,setAttendance}
             {isOut&&<Divider/>}
             <FSelect label="" value={rec.siteId} onChange={v=>setEmpRec(emp.id,v,rec.hours||1)}>
               <option value="">— 休み / 未入力 —</option>
-              {sites.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+              {sites.map(st=><option key={st.id} value={st.id}>{st.name}</option>)}
             </FSelect>
             {rec.siteId&&(
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:-4}}>
@@ -705,7 +705,7 @@ function AttendanceTab({sites,employees,subcontractors,attendance,setAttendance}
             </div>
             <FSelect label="" value={rec.siteId} onChange={v=>setScRec(sc.id,v,rec.count||1)}>
               <option value="">— 未入力 —</option>
-              {sites.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+              {sites.map(st=><option key={st.id} value={st.id}>{st.name}</option>)}
             </FSelect>
             {rec.siteId&&(
               <div>
