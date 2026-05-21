@@ -103,7 +103,7 @@ function getMonthDays(ym) {
 function getDow(d){return["日","月","火","水","木","金","土"][new Date(d).getDay()];}
 
 // ── HTML-based PDF (browser print) — supports full Japanese ──
-function downloadPayslipPDF(w,emp,month,baseWage,sundayBonus,sundayDays,siteAllowance,grandTotal,detail){
+function downloadPayslipPDF(emp,month,baseWage,sundayBonus,sundayDays,siteAllowance,grandTotal,detail){
   const today = todayStr();
   const rows = detail.map((d,i)=>`
     <tr style="background:${d.isSun?'#2a0d0d':i%2===0?'#14192e':'#19203a'}">
@@ -170,12 +170,20 @@ ${+siteAllowance>0?`<div class="row"><span class="row-label">現場手当</span>
   <tbody>${rows}</tbody>
 </table>
 <button onclick="window.close()" style="position:fixed;top:16px;right:16px;z-index:9999;background:#d4a853;color:#0f1423;border:none;border-radius:8px;padding:10px 20px;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;" class="no-print">✕ 閉じる</button></body></html>`;
-  w.document.write(html);
-  w.document.close();
-  w.onload = ()=>{ w.focus(); w.print(); };
+  const printDiv=document.createElement('div');
+  printDiv.id='print-area';
+  const bodyMatch=html.match(/<body[^>]*>([\s\S]*)<\/body>/i);const styleMatch=html.match(/<style[^>]*>([\s\S]*?)<\/style>/i);printDiv.innerHTML=bodyMatch?bodyMatch[1]:html;const pageStyle=document.createElement('style');pageStyle.id='print-page-style';pageStyle.textContent=styleMatch?styleMatch[1]:'';document.head.appendChild(pageStyle);
+  document.body.appendChild(printDiv);
+  const printStyle=document.createElement('style');
+  printStyle.id='print-style';
+  printStyle.textContent='@media print{body > *:not(#print-area){display:none !important;} #print-area{display:block !important;}} @media screen{#print-area{display:none;}}';
+  document.head.appendChild(printStyle);
+  const cleanup=()=>{if(printDiv.parentNode)printDiv.parentNode.removeChild(printDiv);if(printStyle.parentNode)printStyle.parentNode.removeChild(printStyle);if(pageStyle.parentNode)pageStyle.parentNode.removeChild(pageStyle);window.removeEventListener('afterprint',cleanup);};
+  window.addEventListener('afterprint',cleanup);
+  setTimeout(()=>{window.print();},100);
 }
 
-function downloadSitePDF(w,site,labor,totalCost,gross,rate){
+function downloadSitePDF(site,labor,totalCost,gross,rate){
   const today = todayStr();
   const gc = gross>=0?'#5cc98a':'#e05c5c';
   const gcDk = gross>=0?'#0a2316':'#2a0808';
@@ -254,12 +262,20 @@ function downloadSitePDF(w,site,labor,totalCost,gross,rate){
   </div>
 </div>
 <button onclick="window.close()" style="position:fixed;top:16px;right:16px;z-index:9999;background:#d4a853;color:#0f1423;border:none;border-radius:8px;padding:10px 20px;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;" class="no-print">✕ 閉じる</button></body></html>`;
-  w.document.write(html);
-  w.document.close();
-  w.onload = ()=>{ w.focus(); w.print(); };
+  const printDiv=document.createElement('div');
+  printDiv.id='print-area';
+  const bodyMatch=html.match(/<body[^>]*>([\s\S]*)<\/body>/i);const styleMatch=html.match(/<style[^>]*>([\s\S]*?)<\/style>/i);printDiv.innerHTML=bodyMatch?bodyMatch[1]:html;const pageStyle=document.createElement('style');pageStyle.id='print-page-style';pageStyle.textContent=styleMatch?styleMatch[1]:'';document.head.appendChild(pageStyle);
+  document.body.appendChild(printDiv);
+  const printStyle=document.createElement('style');
+  printStyle.id='print-style';
+  printStyle.textContent='@media print{body > *:not(#print-area){display:none !important;} #print-area{display:block !important;}} @media screen{#print-area{display:none;}}';
+  document.head.appendChild(printStyle);
+  const cleanup=()=>{if(printDiv.parentNode)printDiv.parentNode.removeChild(printDiv);if(printStyle.parentNode)printStyle.parentNode.removeChild(printStyle);if(pageStyle.parentNode)pageStyle.parentNode.removeChild(pageStyle);window.removeEventListener('afterprint',cleanup);};
+  window.addEventListener('afterprint',cleanup);
+  setTimeout(()=>{window.print();},100);
 }
 
-function downloadScPDF(w,sc,month,totalCount,totalCost,detail){
+function downloadScPDF(sc,month,totalCount,totalCost,detail){
   const today=todayStr();
   const rows=detail.map((d,i)=>`
     <tr style="background:${i%2===0?'#14192e':'#19203a'}">
@@ -307,9 +323,17 @@ th{background:#0d1220;color:#e07b4a;font-size:11px;font-weight:700;padding:6px 8
 <th>日付</th><th>曜日</th><th>現場</th><th style="text-align:center;">人数</th><th style="text-align:right;">金額</th>
 </tr></thead><tbody>${rows}</tbody></table>
 <button onclick="window.close()" style="position:fixed;top:16px;right:16px;z-index:9999;background:#d4a853;color:#0f1423;border:none;border-radius:8px;padding:10px 20px;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;" class="no-print">✕ 閉じる</button></body></html>`;
-  w.document.write(html);
-  w.document.close();
-  w.onload=()=>{w.focus();w.print();setTimeout(()=>{const btn=w.document.createElement('button');btn.textContent='✕ 閉じる';btn.style.cssText='position:fixed;top:16px;right:16px;z-index:9999;background:#e07b4a;color:#0f1423;border:none;border-radius:8px;padding:10px 20px;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;';btn.onclick=()=>w.close();w.document.body.appendChild(btn);},500);};
+    const printDiv=document.createElement('div');
+  printDiv.id='print-area';
+  const bodyMatch=html.match(/<body[^>]*>([\s\S]*)<\/body>/i);const styleMatch=html.match(/<style[^>]*>([\s\S]*?)<\/style>/i);printDiv.innerHTML=bodyMatch?bodyMatch[1]:html;const pageStyle=document.createElement('style');pageStyle.id='print-page-style';pageStyle.textContent=styleMatch?styleMatch[1]:'';document.head.appendChild(pageStyle);
+  document.body.appendChild(printDiv);
+  const printStyle=document.createElement('style');
+  printStyle.id='print-style';
+  printStyle.textContent='@media print{body > *:not(#print-area){display:none !important;} #print-area{display:block !important;}} @media screen{#print-area{display:none;}}';
+  document.head.appendChild(printStyle);
+  const cleanup=()=>{if(printDiv.parentNode)printDiv.parentNode.removeChild(printDiv);if(printStyle.parentNode)printStyle.parentNode.removeChild(printStyle);if(pageStyle.parentNode)pageStyle.parentNode.removeChild(pageStyle);window.removeEventListener('afterprint',cleanup);};
+  window.addEventListener('afterprint',cleanup);
+  setTimeout(()=>{window.print();},100);
 }
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
@@ -588,7 +612,7 @@ function SiteForm({site,onSave,onDelete,onClose,attendance,employees,subcontract
 
         <button onClick={()=>onSave(f)} style={s.btnPrimary}>{isNew?"✚ 現場を登録":"💾 保存する"}</button>
         <div style={{height:8}}/>
-        {!isNew&&<PdfButton onClick={()=>{const w=window.open('','pdf_'+Date.now(),'width=800,height=900');setSaving(true);try{downloadSitePDF(w,f,labor,totalCost,gross,rate);}catch(e){alert(e.message);}setSaving(false);}} saving={saving}/>}
+        {!isNew&&<PdfButton onClick={()=>{setSaving(true);try{downloadSitePDF(f,labor,totalCost,gross,rate);}catch(e){alert(e.message);}setSaving(false);}} saving={saving}/>}
         {!isNew&&<button onClick={()=>onDelete(site.id)} style={s.btnDanger}>🗑 削除</button>}
       </div>
     </div>
@@ -878,7 +902,7 @@ function PayslipView({summary,month,onClose}) {
   return (
     <div style={{minHeight:"100vh",background:C.bg,fontFamily:"'Noto Sans JP',sans-serif"}}>
       <BackHeader title="給与明細書" onClose={onClose}
-        right={<PdfButton onClick={()=>{const w=window.open('','pdf_'+Date.now(),'width=800,height=900');setSaving(true);try{downloadPayslipPDF(w,emp,month,baseWage,sundayBonus,sundayDays,siteAllowance,grandTotal,detail);}catch(e){alert(e.message);}setSaving(false);}} saving={saving}/>}/>
+        right={<PdfButton onClick={()=>{setSaving(true);try{downloadPayslipPDF(emp,month,baseWage,sundayBonus,sundayDays,siteAllowance,grandTotal,detail);}catch(e){alert(e.message);}setSaving(false);}} saving={saving}/>}/>
       <div style={{padding:"16px 16px 100px"}}>
         {/* Hero */}
         <div style={{background:`linear-gradient(135deg,${C.bgCard},${C.bgDeep})`,border:`1px solid ${C.gold}40`,borderRadius:20,padding:"22px 20px",marginBottom:16,position:"relative",overflow:"hidden"}}>
@@ -980,7 +1004,7 @@ function ScInvoiceView({summary,month,onClose}) {
   return (
     <div style={{minHeight:"100vh",background:C.bg,fontFamily:"'Noto Sans JP',sans-serif"}}>
       <BackHeader title="外注費明細" onClose={onClose}
-        right={<PdfButton onClick={()=>{const w=window.open('','pdf_'+Date.now(),'width=800,height=900');setSaving(true);try{downloadScPDF(w,sc,month,totalCount,totalCost,detail);}catch(e){alert(e.message);}setSaving(false);}} saving={saving}/>}/>
+        right={<PdfButton onClick={()=>{setSaving(true);try{downloadScPDF(sc,month,totalCount,totalCost,detail);}catch(e){alert(e.message);}setSaving(false);}} saving={saving}/>}/>
       <div style={{padding:"16px 16px 100px"}}>
         <div style={{background:`linear-gradient(135deg,${C.bgCard},${C.bgDeep})`,border:`1px solid ${C.orange}40`,borderRadius:20,padding:"22px 20px",marginBottom:16,position:"relative",overflow:"hidden"}}>
           <div style={{position:"absolute",top:10,right:18,fontSize:10,color:C.orange,fontWeight:700,letterSpacing:2}}>SUBCONTRACT</div>
