@@ -170,10 +170,13 @@ ${+siteAllowance>0?`<div class="row"><span class="row-label">現場手当</span>
   <tbody>${rows}</tbody>
 </table>
 <button onclick="window.close()" style="position:fixed;top:16px;right:16px;z-index:9999;background:#d4a853;color:#0f1423;border:none;border-radius:8px;padding:10px 20px;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;" class="no-print">✕ 閉じる</button></body></html>`;
-  const w = window.open('','pdf_'+Date.now(),'width=800,height=900');
-  w.document.write(html);
-  w.document.close();
-  w.onload = ()=>{ w.focus(); w.print(); };
+  const blob=new Blob([html],{type:'text/html'});
+  const burl=URL.createObjectURL(blob);
+  const ifr=document.createElement('iframe');
+  ifr.style.cssText='position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;border:none;';
+  document.body.appendChild(ifr);
+  ifr.onload=()=>{ifr.contentWindow.focus();ifr.contentWindow.print();setTimeout(()=>{document.body.removeChild(ifr);URL.revokeObjectURL(burl);},1000);};
+  ifr.src=burl;
 }
 
 function downloadSitePDF(site,labor,totalCost,gross,rate){
@@ -255,10 +258,13 @@ function downloadSitePDF(site,labor,totalCost,gross,rate){
   </div>
 </div>
 <button onclick="window.close()" style="position:fixed;top:16px;right:16px;z-index:9999;background:#d4a853;color:#0f1423;border:none;border-radius:8px;padding:10px 20px;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;" class="no-print">✕ 閉じる</button></body></html>`;
-  const w = window.open('','pdf_'+Date.now(),'width=800,height=900');
-  w.document.write(html);
-  w.document.close();
-  w.onload = ()=>{ w.focus(); w.print(); };
+  const blob=new Blob([html],{type:'text/html'});
+  const burl=URL.createObjectURL(blob);
+  const ifr=document.createElement('iframe');
+  ifr.style.cssText='position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;border:none;';
+  document.body.appendChild(ifr);
+  ifr.onload=()=>{ifr.contentWindow.focus();ifr.contentWindow.print();setTimeout(()=>{document.body.removeChild(ifr);URL.revokeObjectURL(burl);},1000);};
+  ifr.src=burl;
 }
 
 function downloadScPDF(sc,month,totalCount,totalCost,detail){
@@ -309,10 +315,13 @@ th{background:#0d1220;color:#e07b4a;font-size:11px;font-weight:700;padding:6px 8
 <th>日付</th><th>曜日</th><th>現場</th><th style="text-align:center;">人数</th><th style="text-align:right;">金額</th>
 </tr></thead><tbody>${rows}</tbody></table>
 <button onclick="window.close()" style="position:fixed;top:16px;right:16px;z-index:9999;background:#d4a853;color:#0f1423;border:none;border-radius:8px;padding:10px 20px;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;" class="no-print">✕ 閉じる</button></body></html>`;
-  const w=window.open('','pdf_'+Date.now(),'width=800,height=900');
-  w.document.write(html);
-  w.document.close();
-  w.onload=()=>{w.focus();w.print();setTimeout(()=>{const btn=w.document.createElement('button');btn.textContent='✕ 閉じる';btn.style.cssText='position:fixed;top:16px;right:16px;z-index:9999;background:#e07b4a;color:#0f1423;border:none;border-radius:8px;padding:10px 20px;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;';btn.onclick=()=>w.close();w.document.body.appendChild(btn);},500);};
+  const w=const blob=new Blob([html],{type:'text/html'});
+  const burl=URL.createObjectURL(blob);
+  const ifr=document.createElement('iframe');
+  ifr.style.cssText='position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;border:none;';
+  document.body.appendChild(ifr);
+  ifr.onload=()=>{ifr.contentWindow.focus();ifr.contentWindow.print();setTimeout(()=>{document.body.removeChild(ifr);URL.revokeObjectURL(burl);},1000);};
+  ifr.src=burl;;
 }
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
