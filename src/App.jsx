@@ -104,6 +104,7 @@ function getDow(d){return["日","月","火","水","木","金","土"][new Date(d)
 
 // ── HTML-based PDF (browser print) — supports full Japanese ──
 function downloadPayslipPDF(emp,month,baseWage,sundayBonus,sundayDays,siteAllowance,grandTotal,detail){
+  const w = window.open('','pdf_'+Date.now(),'width=800,height=900');
   const today = todayStr();
   const rows = detail.map((d,i)=>`
     <tr style="background:${d.isSun?'#2a0d0d':i%2===0?'#14192e':'#19203a'}">
@@ -170,13 +171,13 @@ ${+siteAllowance>0?`<div class="row"><span class="row-label">現場手当</span>
   <tbody>${rows}</tbody>
 </table>
 <button onclick="window.close()" style="position:fixed;top:16px;right:16px;z-index:9999;background:#d4a853;color:#0f1423;border:none;border-radius:8px;padding:10px 20px;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;" class="no-print">✕ 閉じる</button></body></html>`;
-  const w = window.open('','pdf_'+Date.now(),'width=800,height=900');
   w.document.write(html);
   w.document.close();
   w.onload = ()=>{ w.focus(); w.print(); };
 }
 
 function downloadSitePDF(site,labor,totalCost,gross,rate){
+  const w = window.open('','pdf_'+Date.now(),'width=800,height=900');
   const today = todayStr();
   const gc = gross>=0?'#5cc98a':'#e05c5c';
   const gcDk = gross>=0?'#0a2316':'#2a0808';
@@ -255,13 +256,13 @@ function downloadSitePDF(site,labor,totalCost,gross,rate){
   </div>
 </div>
 <button onclick="window.close()" style="position:fixed;top:16px;right:16px;z-index:9999;background:#d4a853;color:#0f1423;border:none;border-radius:8px;padding:10px 20px;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;" class="no-print">✕ 閉じる</button></body></html>`;
-  const w = window.open('','pdf_'+Date.now(),'width=800,height=900');
   w.document.write(html);
   w.document.close();
   w.onload = ()=>{ w.focus(); w.print(); };
 }
 
 function downloadScPDF(sc,month,totalCount,totalCost,detail){
+  const w = window.open('','pdf_'+Date.now(),'width=800,height=900');
   const today=todayStr();
   const rows=detail.map((d,i)=>`
     <tr style="background:${i%2===0?'#14192e':'#19203a'}">
@@ -309,7 +310,6 @@ th{background:#0d1220;color:#e07b4a;font-size:11px;font-weight:700;padding:6px 8
 <th>日付</th><th>曜日</th><th>現場</th><th style="text-align:center;">人数</th><th style="text-align:right;">金額</th>
 </tr></thead><tbody>${rows}</tbody></table>
 <button onclick="window.close()" style="position:fixed;top:16px;right:16px;z-index:9999;background:#d4a853;color:#0f1423;border:none;border-radius:8px;padding:10px 20px;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;" class="no-print">✕ 閉じる</button></body></html>`;
-  const w=window.open('','pdf_'+Date.now(),'width=800,height=900');
   w.document.write(html);
   w.document.close();
   w.onload=()=>{w.focus();w.print();setTimeout(()=>{const btn=w.document.createElement('button');btn.textContent='✕ 閉じる';btn.style.cssText='position:fixed;top:16px;right:16px;z-index:9999;background:#e07b4a;color:#0f1423;border:none;border-radius:8px;padding:10px 20px;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;';btn.onclick=()=>w.close();w.document.body.appendChild(btn);},500);};
