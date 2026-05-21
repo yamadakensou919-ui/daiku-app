@@ -103,8 +103,7 @@ function getMonthDays(ym) {
 function getDow(d){return["日","月","火","水","木","金","土"][new Date(d).getDay()];}
 
 // ── HTML-based PDF (browser print) — supports full Japanese ──
-function downloadPayslipPDF(emp,month,baseWage,sundayBonus,sundayDays,siteAllowance,grandTotal,detail){
-  const w = window.open('','pdf_'+Date.now(),'width=800,height=900');
+function downloadPayslipPDF(w,emp,month,baseWage,sundayBonus,sundayDays,siteAllowance,grandTotal,detail){
   const today = todayStr();
   const rows = detail.map((d,i)=>`
     <tr style="background:${d.isSun?'#2a0d0d':i%2===0?'#14192e':'#19203a'}">
@@ -176,8 +175,7 @@ ${+siteAllowance>0?`<div class="row"><span class="row-label">現場手当</span>
   w.onload = ()=>{ w.focus(); w.print(); };
 }
 
-function downloadSitePDF(site,labor,totalCost,gross,rate){
-  const w = window.open('','pdf_'+Date.now(),'width=800,height=900');
+function downloadSitePDF(w,site,labor,totalCost,gross,rate){
   const today = todayStr();
   const gc = gross>=0?'#5cc98a':'#e05c5c';
   const gcDk = gross>=0?'#0a2316':'#2a0808';
@@ -261,8 +259,7 @@ function downloadSitePDF(site,labor,totalCost,gross,rate){
   w.onload = ()=>{ w.focus(); w.print(); };
 }
 
-function downloadScPDF(sc,month,totalCount,totalCost,detail){
-  const w = window.open('','pdf_'+Date.now(),'width=800,height=900');
+function downloadScPDF(w,sc,month,totalCount,totalCost,detail){
   const today=todayStr();
   const rows=detail.map((d,i)=>`
     <tr style="background:${i%2===0?'#14192e':'#19203a'}">
@@ -591,7 +588,7 @@ function SiteForm({site,onSave,onDelete,onClose,attendance,employees,subcontract
 
         <button onClick={()=>onSave(f)} style={s.btnPrimary}>{isNew?"✚ 現場を登録":"💾 保存する"}</button>
         <div style={{height:8}}/>
-        {!isNew&&<PdfButton onClick={async()=>{setSaving(true);try{await downloadSitePDF(f,labor,totalCost,gross,rate);}catch(e){alert(e.message);}setSaving(false);}} saving={saving}/>}
+        {!isNew&&<PdfButton onClick={()=>{const w=window.open('','pdf_'+Date.now(),'width=800,height=900');setSaving(true);try{downloadSitePDF(w,f,labor,totalCost,gross,rate);}catch(e){alert(e.message);}setSaving(false);}} saving={saving}/>}
         {!isNew&&<button onClick={()=>onDelete(site.id)} style={s.btnDanger}>🗑 削除</button>}
       </div>
     </div>
@@ -881,7 +878,7 @@ function PayslipView({summary,month,onClose}) {
   return (
     <div style={{minHeight:"100vh",background:C.bg,fontFamily:"'Noto Sans JP',sans-serif"}}>
       <BackHeader title="給与明細書" onClose={onClose}
-        right={<PdfButton onClick={async()=>{setSaving(true);try{await downloadPayslipPDF(emp,month,baseWage,sundayBonus,sundayDays,siteAllowance,grandTotal,detail);}catch(e){alert(e.message);}setSaving(false);}} saving={saving}/>}/>
+        right={<PdfButton onClick={()=>{const w=window.open('','pdf_'+Date.now(),'width=800,height=900');setSaving(true);try{downloadPayslipPDF(w,emp,month,baseWage,sundayBonus,sundayDays,siteAllowance,grandTotal,detail);}catch(e){alert(e.message);}setSaving(false);}} saving={saving}/>}/>
       <div style={{padding:"16px 16px 100px"}}>
         {/* Hero */}
         <div style={{background:`linear-gradient(135deg,${C.bgCard},${C.bgDeep})`,border:`1px solid ${C.gold}40`,borderRadius:20,padding:"22px 20px",marginBottom:16,position:"relative",overflow:"hidden"}}>
@@ -983,7 +980,7 @@ function ScInvoiceView({summary,month,onClose}) {
   return (
     <div style={{minHeight:"100vh",background:C.bg,fontFamily:"'Noto Sans JP',sans-serif"}}>
       <BackHeader title="外注費明細" onClose={onClose}
-        right={<PdfButton onClick={async()=>{setSaving(true);try{downloadScPDF(sc,month,totalCount,totalCost,detail);}catch(e){alert(e.message);}setSaving(false);}} saving={saving}/>}/>
+        right={<PdfButton onClick={()=>{const w=window.open('','pdf_'+Date.now(),'width=800,height=900');setSaving(true);try{downloadScPDF(w,sc,month,totalCount,totalCost,detail);}catch(e){alert(e.message);}setSaving(false);}} saving={saving}/>}/>
       <div style={{padding:"16px 16px 100px"}}>
         <div style={{background:`linear-gradient(135deg,${C.bgCard},${C.bgDeep})`,border:`1px solid ${C.orange}40`,borderRadius:20,padding:"22px 20px",marginBottom:16,position:"relative",overflow:"hidden"}}>
           <div style={{position:"absolute",top:10,right:18,fontSize:10,color:C.orange,fontWeight:700,letterSpacing:2}}>SUBCONTRACT</div>
