@@ -321,7 +321,7 @@ th{background:#0d1220;color:#e07b4a;font-size:11px;font-weight:700;padding:6px 8
   ifr.style.cssText='position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;border:none;';
   document.body.appendChild(ifr);
   ifr.onload=()=>{ifr.contentWindow.focus();ifr.contentWindow.print();setTimeout(()=>{document.body.removeChild(ifr);URL.revokeObjectURL(burl);},1000);};
-  ifr.src=burl;;
+  ifr.src=burl;
 }
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
