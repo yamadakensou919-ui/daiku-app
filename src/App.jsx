@@ -81,6 +81,9 @@ const YEN = (n) => (n==null||n===""||isNaN(+n) ? "—" : `¥${(+n).toLocaleStrin
 const PCT = (n) => (n==null||isNaN(+n) ? "—" : `${(+n*100).toFixed(1)}%`);
 const todayStr = () => new Date().toISOString().slice(0,10);
 const SUNDAY_BONUS = 1000;
+// 有給休暇。現場ではないので、この id はどの現場にも割り当てられない（freshId が回避する）
+const PAID_LEAVE_ID = "__paid_leave__";
+const PAID_LEAVE_NAME = "🏖 有給";
 const COST_KEYS  = ["材料費","外注費","交通費","消耗品","その他"];
 const COST_ICONS = ["🪵","👷","🚗","🔧","📦"];
 const COST_COLORS= ["#d4a853","#e07b4a","#5ba8d4","#9b7de8","#5cc98a"];
@@ -214,13 +217,13 @@ const PRINT_CSS = `
 
 const YEN_PRINT = (n) => `¥${(+n||0).toLocaleString("ja-JP")}`;
 
-async function downloadPayslipPDF(emp, month, baseWage, sundayBonus, sundayDays, siteAllowance, grandTotal, detail) {
+async function downloadPayslipPDF(emp, month, baseWage, sundayBonus, sundayDays, siteAllowance, grandTotal, detail, paidDays = 0, paidWage = 0) {
   const rows = detail.map(d => `
     <tr class="${d.isSun?"sun":""}">
       <td><b>${d.date.slice(5)}</b></td>
       <td><b>${d.dow}</b></td>
       <td>${d.site}</td>
-      <td>${d.hours===1?"全日":"半日"}${d.isSun?` <span style="color:#c92a2a;font-size:10px">+${YEN_PRINT(d.bonus)}</span>`:""}</td>
+      <td>${d.paid?"有給":(d.hours===1?"全日":"半日")}${d.isSun?` <span style="color:#c92a2a;font-size:10px">+${YEN_PRINT(d.bonus)}</span>`:""}</td>
       <td class="num"><b>${YEN_PRINT(d.wage+d.bonus)}</b></td>
     </tr>
   `).join("");
@@ -239,12 +242,13 @@ async function downloadPayslipPDF(emp, month, baseWage, sundayBonus, sundayDays,
       <div style="text-align:right;font-size:11px;color:#666">
         発行日: ${todayStr()}<br>
         日給単価: ${YEN_PRINT(emp.dailyWage)}<br>
-        出勤日数: ${detail.reduce((a,d)=>a+d.hours,0)}日
+        出勤日数: ${detail.filter(d=>!d.paid).reduce((a,d)=>a+d.hours,0)}日${paidDays>0?`<br>有給取得: ${paidDays}日`:""}
       </div>
     </div>
 
     <div class="section-title">支給内訳</div>
     <div class="row"><span class="label">基本給</span><span class="value">${YEN_PRINT(baseWage)}</span></div>
+    ${paidWage>0?`<div class="row"><span class="label">有給休暇（${paidDays}日 × ${YEN_PRINT(emp.dailyWage)}）</span><span class="value" style="color:#b8882a">+${YEN_PRINT(paidWage)}</span></div>`:""}
     ${sundayBonus>0?`<div class="row"><span class="label">休日出勤手当（日曜${sundayDays}日 × ¥1,000）</span><span class="value" style="color:#c92a2a">+${YEN_PRINT(sundayBonus)}</span></div>`:""}
     ${+siteAllowance>0?`<div class="row"><span class="label">現場手当</span><span class="value" style="color:#b8882a">+${YEN_PRINT(+siteAllowance)}</span></div>`:""}
 
@@ -632,7 +636,7 @@ function AttendanceTab({sites,employees,subcontractors,attendance,setAttendance}
       const day=prev[selDate]||{employees:[],subcontractors:[]};
       let emps=[...(day.employees||[])];
       const idx=emps.findIndex(r=>r.empId===empId);
-      const siteName=siteId?(sites.find(s=>s.id===siteId)?.name||""):"";
+      const siteName=siteId===PAID_LEAVE_ID?PAID_LEAVE_NAME:(siteId?(sites.find(s=>s.id===siteId)?.name||""):"");
       if(!siteId)emps=emps.filter(r=>r.empId!==empId);
       else if(idx>=0)emps[idx]={empId,siteId,siteName,hours};
       else emps.push({empId,siteId,siteName,hours});
@@ -644,7 +648,7 @@ function AttendanceTab({sites,employees,subcontractors,attendance,setAttendance}
       const day=prev[selDate]||{employees:[],subcontractors:[]};
       let scs=[...(day.subcontractors||[])];
       const idx=scs.findIndex(r=>r.scId===scId);
-      const siteName=siteId?(sites.find(s=>s.id===siteId)?.name||""):"";
+      const siteName=siteId===PAID_LEAVE_ID?PAID_LEAVE_NAME:(siteId?(sites.find(s=>s.id===siteId)?.name||""):"");
       if(!siteId||count<=0)scs=scs.filter(r=>r.scId!==scId);
       else if(idx>=0)scs[idx]={scId,siteId,siteName,count};
       else scs.push({scId,siteId,siteName,count});
@@ -673,23 +677,33 @@ function AttendanceTab({sites,employees,subcontractors,attendance,setAttendance}
       </div>
       {employees.map((emp,i)=>{
         const rec=empRecs.find(r=>r.empId===emp.id)||{siteId:"",hours:1};
-        const isOut=!!rec.siteId;
+        const isPaid=rec.siteId===PAID_LEAVE_ID;
+        const isOut=!!rec.siteId&&!isPaid;
+        const filled=!!rec.siteId;
         return (
-          <div key={emp.id} className="card-anim" style={{...s.card,borderColor:isOut?C.blue:C.border,animationDelay:`${i*0.05}s`}}>
-            <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:isOut?14:0}}>
+          <div key={emp.id} className="card-anim" style={{...s.card,borderColor:isPaid?C.gold:isOut?C.blue:C.border,animationDelay:`${i*0.05}s`}}>
+            <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:filled?14:0}}>
               <div style={{width:42,height:42,borderRadius:12,background:`linear-gradient(135deg,${C.blue}30,${C.blue}10)`,border:`1px solid ${C.blue}50`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,fontWeight:800,color:C.blue,flexShrink:0,fontFamily:"'JetBrains Mono',monospace"}}>{emp.name[0]}</div>
               <div style={{flex:1}}>
                 <div style={{fontSize:15,fontWeight:700,color:C.text}}>{emp.name}</div>
                 <div style={{fontSize:11,color:C.textSub}}>{emp.role} · {YEN(emp.dailyWage)}/日{isSun?` (+¥${SUNDAY_BONUS})`:""}</div>
               </div>
               {isOut&&<Tag color={C.green}>出勤済</Tag>}
+              {isPaid&&<Tag color={C.gold}>有給</Tag>}
             </div>
-            {isOut&&<Divider/>}
-            <FSelect label="" value={rec.siteId} onChange={v=>setEmpRec(emp.id,v,rec.hours||1)}>
+            {filled&&<Divider/>}
+            <FSelect label="" value={rec.siteId} onChange={v=>setEmpRec(emp.id,v,v===PAID_LEAVE_ID?1:(rec.hours||1))}>
               <option value="">— 休み / 未入力 —</option>
+              <option value={PAID_LEAVE_ID}>🏖 有給（全日）</option>
               {sites.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
             </FSelect>
-            {rec.siteId&&(
+            {isPaid&&(
+              <div style={{background:C.bgDeep,borderRadius:10,padding:"12px 14px",border:`1px solid ${C.gold}40`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <span style={{fontSize:12,color:C.textSub}}>有給（全日・日給満額）</span>
+                <span style={{fontSize:16,fontWeight:800,color:C.gold,fontFamily:"'JetBrains Mono',monospace"}}>{YEN(emp.dailyWage)}</span>
+              </div>
+            )}
+            {isOut&&(
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:-4}}>
                 {[[1,"全日"],[0.5,"半日"]].map(([h,label])=>(
                   <button key={h} onClick={()=>setEmpRec(emp.id,rec.siteId,h)}
@@ -766,10 +780,14 @@ function PayrollTab({employees,subcontractors,sites,attendance}) {
   const days=getMonthDays(selMonth);
 
   const empSummaries=useMemo(()=>employees.map(emp=>{
-    let totalDays=0,baseWage=0,sundayBonus=0;const detail=[];
+    let totalDays=0,baseWage=0,sundayBonus=0,paidDays=0,paidWage=0;const detail=[];
     days.forEach(d=>{
       const rec=((attendance[d]||{}).employees||[]).find(r=>r.empId===emp.id);
-      if(rec&&rec.siteId){
+      if(rec&&rec.siteId===PAID_LEAVE_ID){
+        const wage=emp.dailyWage*(rec.hours||1);
+        paidDays+=(rec.hours||1);paidWage+=wage;
+        detail.push({date:d,dow:getDow(d),site:PAID_LEAVE_NAME,hours:rec.hours||1,wage,isSun:false,bonus:0,paid:true});
+      } else if(rec&&rec.siteId){
         const site=sites.find(s=>s.id===rec.siteId);
         const siteName=site?.name || rec.siteName || "(削除された現場)";
         const isSun=new Date(d).getDay()===0;
@@ -778,7 +796,7 @@ function PayrollTab({employees,subcontractors,sites,attendance}) {
         detail.push({date:d,dow:getDow(d),site:siteName,hours:rec.hours,wage,isSun,bonus,deleted:!site});
       }
     });
-    return {emp,totalDays,baseWage,sundayBonus,totalWage:baseWage+sundayBonus,detail};
+    return {emp,totalDays,baseWage,sundayBonus,paidDays,paidWage,totalWage:baseWage+sundayBonus+paidWage,detail};
   }),[employees,sites,attendance,selMonth]);
 
   const scSummaries=useMemo(()=>subcontractors.map(sc=>{
@@ -832,7 +850,7 @@ function PayrollTab({employees,subcontractors,sites,attendance}) {
       <div style={{fontSize:10,color:C.gold,fontWeight:700,letterSpacing:2,marginBottom:12,display:"flex",alignItems:"center",gap:8}}>
         <GlowDot color={C.green}/> 従業員 給与サマリー
       </div>
-      {empSummaries.map(({emp,totalDays,sundayBonus,totalWage,detail},i)=>(
+      {empSummaries.map(({emp,totalDays,sundayBonus,paidDays,paidWage,totalWage,detail},i)=>(
         <div key={emp.id} onClick={()=>setViewing(emp.id)} className="card-anim"
           style={{...s.card,cursor:"pointer",animationDelay:`${i*0.05}s`,transition:"border-color 0.2s"}}
           onMouseEnter={e=>e.currentTarget.style.borderColor=C.green}
@@ -854,7 +872,8 @@ function PayrollTab({employees,subcontractors,sites,attendance}) {
             <StatBox label="明細" value={`${detail.length}件`} sub/>
           </div>
           {sundayBonus>0&&<div style={{marginTop:10,background:C.redDk,borderRadius:8,padding:"6px 12px",fontSize:11,color:C.red,display:"flex",alignItems:"center",gap:6}}><GlowDot color={C.red}/>日曜出勤 {detail.filter(d=>d.isSun).length}日 · +{YEN(sundayBonus)}</div>}
-          {totalDays===0&&<div style={{marginTop:8,fontSize:11,color:C.textDim,textAlign:"center"}}>この月の出勤記録なし</div>}
+          {paidDays>0&&<div style={{marginTop:10,background:C.bgDeep,borderRadius:8,padding:"6px 12px",fontSize:11,color:C.gold,display:"flex",alignItems:"center",gap:6,border:`1px solid ${C.gold}30`}}><GlowDot color={C.gold}/>有給 {paidDays}日 · +{YEN(paidWage)}</div>}
+          {totalDays===0&&paidDays===0&&<div style={{marginTop:8,fontSize:11,color:C.textDim,textAlign:"center"}}>この月の出勤記録なし</div>}
           <div style={{textAlign:"right",marginTop:8,fontSize:10,color:C.textDim}}>明細を見る →</div>
         </div>
       ))}
@@ -894,7 +913,7 @@ function PayrollTab({employees,subcontractors,sites,attendance}) {
 
 // ── 給与明細書 ────────────────────────────────────────────────────────────────
 function PayslipView({summary,month,onClose}) {
-  const {emp,totalDays,baseWage,sundayBonus,totalWage,detail}=summary;
+  const {emp,totalDays,baseWage,sundayBonus,paidDays,paidWage,totalWage,detail}=summary;
   const [siteAllowance,setSiteAllowance]=useState("");
   const [saving,setSaving]=useState(false);
   const grandTotal=totalWage+(+siteAllowance||0);
@@ -903,7 +922,7 @@ function PayslipView({summary,month,onClose}) {
   return (
     <div style={{minHeight:"100vh",background:C.bg,fontFamily:"'Noto Sans JP',sans-serif"}}>
       <BackHeader title="給与明細書" onClose={onClose}
-        right={<PdfButton onClick={async()=>{setSaving(true);try{await downloadPayslipPDF(emp,month,baseWage,sundayBonus,sundayDays,siteAllowance,grandTotal,detail);}catch(e){alert(e.message);}setSaving(false);}} saving={saving}/>}/>
+        right={<PdfButton onClick={async()=>{setSaving(true);try{await downloadPayslipPDF(emp,month,baseWage,sundayBonus,sundayDays,siteAllowance,grandTotal,detail,paidDays,paidWage);}catch(e){alert(e.message);}setSaving(false);}} saving={saving}/>}/>
       <div style={{padding:"16px 16px 100px"}}>
         {/* Hero */}
         <div style={{background:`linear-gradient(135deg,${C.bgCard},${C.bgDeep})`,border:`1px solid ${C.gold}40`,borderRadius:20,padding:"22px 20px",marginBottom:16,position:"relative",overflow:"hidden"}}>
@@ -924,6 +943,11 @@ function PayslipView({summary,month,onClose}) {
           <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:`1px solid ${C.border}`}}>
             <span style={{fontSize:13,color:C.textSub}}>出勤日数</span><span style={{fontSize:13,color:C.text,fontWeight:700}}>{totalDays}日</span>
           </div>
+          {paidDays>0&&(
+            <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:`1px solid ${C.border}`}}>
+              <span style={{fontSize:13,color:C.textSub}}>有給取得日数</span><span style={{fontSize:13,color:C.gold,fontWeight:700}}>{paidDays}日</span>
+            </div>
+          )}
           <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:`1px solid ${C.border}`}}>
             <span style={{fontSize:13,color:C.textSub}}>日給単価</span><span style={{fontSize:13,color:C.text,fontWeight:700}}>{YEN(emp.dailyWage)}</span>
           </div>
@@ -932,6 +956,15 @@ function PayslipView({summary,month,onClose}) {
             <span style={{fontSize:14,fontWeight:700,color:C.text}}>基本給</span>
             <span style={{fontSize:15,fontWeight:800,color:C.text,fontFamily:"'JetBrains Mono',monospace"}}>{YEN(baseWage)}</span>
           </div>
+          {paidDays>0&&(
+            <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",alignItems:"center"}}>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <GlowDot color={C.gold}/>
+                <span style={{fontSize:12,color:C.textSub}}>有給休暇（{paidDays}日×{YEN(emp.dailyWage)}）</span>
+              </div>
+              <span style={{fontSize:13,fontWeight:700,color:C.gold}}>+{YEN(paidWage)}</span>
+            </div>
+          )}
           {sundayBonus>0&&(
             <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",alignItems:"center"}}>
               <div style={{display:"flex",alignItems:"center",gap:8}}>
@@ -1235,6 +1268,10 @@ export default function App() {
     const next = {};
     Object.entries(attendance).forEach(([date, day])=>{
       const emps = (day.employees||[]).map(r=>{
+        if (r.siteId === PAID_LEAVE_ID) {
+          if (r.siteName !== PAID_LEAVE_NAME) { changed = true; return {...r, siteName: PAID_LEAVE_NAME}; }
+          return r;
+        }
         const site = sites.find(s=>s.id===r.siteId);
         if (site && r.siteName !== site.name) { changed = true; return {...r, siteName: site.name}; }
         if (!site && !r.siteName) { changed = true; return {...r, siteName: "(不明な現場)"}; }
