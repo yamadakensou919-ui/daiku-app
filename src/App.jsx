@@ -35,6 +35,47 @@ function importData(file) {
   });
 }
 
+// ── Auto backup (rolling 7 days) ──────────────────────────────────────────────
+const BACKUP_KEY_PREFIX = "daiku_backup_";
+const BACKUP_DAYS = 7;
+
+function todayDateStr() { return new Date().toISOString().slice(0,10); }
+
+// Save today's snapshot (overwrite if already saved today) and prune older ones
+function autoBackup(state) {
+  try {
+    const today = todayDateStr();
+    localStorage.setItem(BACKUP_KEY_PREFIX + today, JSON.stringify(state));
+    // Prune old backups - keep only the last BACKUP_DAYS
+    const backups = listBackups();
+    if (backups.length > BACKUP_DAYS) {
+      backups.slice(0, backups.length - BACKUP_DAYS).forEach(b => {
+        localStorage.removeItem(BACKUP_KEY_PREFIX + b.date);
+      });
+    }
+  } catch(e) { console.warn("Auto backup failed:", e); }
+}
+
+function listBackups() {
+  const list = [];
+  for (let i=0; i<localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith(BACKUP_KEY_PREFIX)) {
+      const date = key.slice(BACKUP_KEY_PREFIX.length);
+      const raw = localStorage.getItem(key);
+      list.push({ date, size: raw ? raw.length : 0 });
+    }
+  }
+  return list.sort((a,b) => a.date.localeCompare(b.date)); // oldest first
+}
+
+function restoreBackup(date) {
+  try {
+    const raw = localStorage.getItem(BACKUP_KEY_PREFIX + date);
+    return raw ? JSON.parse(raw) : null;
+  } catch(e) { console.warn("Restore failed:", e); return null; }
+}
+
 // ── Formatters ────────────────────────────────────────────────────────────────
 const YEN = (n) => (n==null||n===""||isNaN(+n) ? "—" : `¥${(+n).toLocaleString("ja-JP")}`);
 const PCT = (n) => (n==null||isNaN(+n) ? "—" : `${(+n*100).toFixed(1)}%`);
@@ -73,7 +114,10 @@ const initAttendance = {
     subcontractors:[],
   },
 };
-let siteSeq=4, empSeq=4, scSeq=3;
+// Unique ID generator - never collides even after page reload
+function uid(prefix) {
+  return `${prefix}${Date.now().toString(36)}${Math.random().toString(36).slice(2,7)}`;
+}
 
 // ── Calc helpers ──────────────────────────────────────────────────────────────
 function calcLaborBySite(siteId,attendance,employees,subcontractors) {
@@ -102,238 +146,168 @@ function getMonthDays(ym) {
 }
 function getDow(d){return["日","月","火","水","木","金","土"][new Date(d).getDay()];}
 
-// ── HTML-based PDF (browser print) — supports full Japanese ──
-function downloadPayslipPDF(emp,month,baseWage,sundayBonus,sundayDays,siteAllowance,grandTotal,detail){
-  const today = todayStr();
-  const rows = detail.map((d,i)=>`
-    <tr style="background:${d.isSun?'#2a0d0d':i%2===0?'#14192e':'#19203a'}">
-      <td style="padding:6px 8px;color:${d.isSun?'#e05c5c':'#b0b8cc'};font-size:13px;">${d.date.slice(5)}</td>
-      <td style="padding:6px 8px;color:${d.isSun?'#e05c5c':'#8892aa'};font-weight:700;font-size:13px;">${d.dow}</td>
-      <td style="padding:6px 8px;color:#c0c8d8;font-size:13px;">${d.site}</td>
-      <td style="padding:6px 8px;color:${d.isSun?'#e05c5c':'#b0b8cc'};font-size:12px;">${d.hours===1?'全日':'半日'}</td>
-      <td style="padding:6px 8px;text-align:right;color:#dce0e8;font-size:13px;">¥${(d.wage+d.bonus).toLocaleString('ja-JP')}</td>
-    </tr>`).join('');
-  const html = `<!DOCTYPE html>
-<html lang="ja">
-<head>
-<meta charset="UTF-8">
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;800&display=swap');
-  *{box-sizing:border-box;margin:0;padding:0;}
-  body{background:#0f1423;color:#e8eaf0;font-family:'Noto Sans JP',sans-serif;padding:20px;}
-  @media print{body{background:#0f1423 !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}.no-print{display:none!important;}}
-  .header-line{height:3px;background:#d4a853;margin-bottom:10px;}
-  .label{font-size:11px;color:#d4a853;font-weight:700;letter-spacing:1px;}
-  .sub{font-size:12px;color:#94a3b8;}
-  .name{font-size:26px;font-weight:800;color:#f0f2f6;margin:6px 0 2px;}
-  .role{font-size:13px;color:#7888a0;margin-bottom:14px;}
-  .sep{height:1px;background:#d4a85340;margin:10px 0;}
-  .row{display:flex;justify-content:space-between;align-items:center;background:#19203a;border-radius:6px;padding:8px 12px;margin-bottom:4px;}
-  .row.sun{background:#2a0d0d;}
-  .row-label{font-size:13px;color:#94a3b8;}
-  .row-val{font-size:13px;font-weight:700;color:#f0f2f6;}
-  .total-box{background:#d4a853;border-radius:8px;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;margin:12px 0;}
-  .total-label{font-size:14px;font-weight:700;color:#0f1423;}
-  .total-val{font-size:20px;font-weight:800;color:#0f1423;}
-  table{width:100%;border-collapse:collapse;margin-top:8px;}
-  th{background:#0d1220;color:#d4a853;font-size:11px;font-weight:700;padding:6px 8px;text-align:left;letter-spacing:1px;}
-  .detail-title{font-size:14px;font-weight:700;color:#d4a853;margin-top:16px;margin-bottom:6px;}
-</style>
-</head>
-<body>
-<div class="header-line"></div>
-<div style="display:flex;justify-content:space-between;align-items:flex-start;">
-  <div>
-    <div class="label">PAYSLIP</div>
-    <div class="name">${emp.name}</div>
-    <div class="role">${emp.role}</div>
-  </div>
-  <div style="text-align:right;">
-    <div class="sub">${month.replace('-','年')}月分</div>
-    <div class="sub">発行 ${today}</div>
-  </div>
-</div>
-<div class="sep"></div>
-<div class="sub" style="margin-bottom:10px;">日給 ¥${emp.dailyWage.toLocaleString('ja-JP')} × ${detail.reduce((a,d)=>a+d.hours,0)}日</div>
-<div class="row"><span class="row-label">基本給</span><span class="row-val">¥${baseWage.toLocaleString('ja-JP')}</span></div>
-${sundayBonus>0?`<div class="row sun"><span class="row-label" style="color:#d4a853;">休日出勤手当（日曜${sundayDays}日）</span><span class="row-val" style="color:#d4a853;">+¥${sundayBonus.toLocaleString('ja-JP')}</span></div>`:''}
-${+siteAllowance>0?`<div class="row"><span class="row-label">現場手当</span><span class="row-val">+¥${(+siteAllowance).toLocaleString('ja-JP')}</span></div>`:''}
-<div class="total-box">
-  <span class="total-label">支給合計</span>
-  <span class="total-val">¥${grandTotal.toLocaleString('ja-JP')}</span>
-</div>
-<div class="detail-title">出勤明細</div>
-<table>
-  <thead><tr>
-    <th>日付</th><th>曜日</th><th>現場</th><th>区分</th><th style="text-align:right;">金額</th>
-  </tr></thead>
-  <tbody>${rows}</tbody>
-</table>
-<button onclick="window.close()" style="position:fixed;top:16px;right:16px;z-index:9999;background:#d4a853;color:#0f1423;border:none;border-radius:8px;padding:10px 20px;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;" class="no-print">✕ 閉じる</button></body></html>`;
-  const printDiv=document.createElement('div');
-  printDiv.id='print-area';
-  const bodyMatch=html.match(/<body[^>]*>([\s\S]*)<\/body>/i);const styleMatch=html.match(/<style[^>]*>([\s\S]*?)<\/style>/i);printDiv.innerHTML=bodyMatch?bodyMatch[1]:html;const pageStyle=document.createElement('style');pageStyle.id='print-page-style';pageStyle.textContent=styleMatch?styleMatch[1]:'';document.head.appendChild(pageStyle);
-  document.body.appendChild(printDiv);
-  const printStyle=document.createElement('style');
-  printStyle.id='print-style';
-  printStyle.textContent='@media print{body > *:not(#print-area){display:none !important;} #print-area{display:block !important;}} @media screen{#print-area{display:none;}}';
-  document.head.appendChild(printStyle);
-  const cleanup=()=>{if(printDiv.parentNode)printDiv.parentNode.removeChild(printDiv);if(printStyle.parentNode)printStyle.parentNode.removeChild(printStyle);if(pageStyle.parentNode)pageStyle.parentNode.removeChild(pageStyle);window.removeEventListener('afterprint',cleanup);};
-  window.addEventListener('afterprint',cleanup);
-  setTimeout(()=>{window.print();},100);
+// ── HTML-based PDF (browser print) — supports full Japanese ──────────────────
+function openPrintWindow(html, title) {
+  const w = window.open("", "_blank", "width=800,height=900");
+  if (!w) { alert("ポップアップがブロックされました。ブラウザの設定でこのサイトのポップアップを許可してください。"); return; }
+  w.document.write(html);
+  w.document.close();
+  w.focus();
+  setTimeout(() => { w.print(); }, 400);
 }
 
-function downloadSitePDF(site,labor,totalCost,gross,rate){
-  const today = todayStr();
-  const gc = gross>=0?'#5cc98a':'#e05c5c';
-  const gcDk = gross>=0?'#0a2316':'#2a0808';
-  const costRows=[
-    ['人件費（従業員）', labor.empWage, '#82b8e0'],
-    ['人件費（外注）', labor.scCost, '#d4a064'],
-    ...COST_KEYS.map((k,i)=>[k, +site[k]||0, '#b0b8cc'])
-  ].filter(([,v])=>v>0);
-  const costRowsHtml = costRows.map(([lbl,val,rgb],i)=>`
-    <tr style="background:${i%2===0?'#14192e':'#19203a'}">
-      <td style="padding:6px 8px;color:${rgb};font-size:13px;">${lbl}</td>
-      <td style="padding:6px 8px;text-align:right;color:#dce0e8;font-size:13px;">¥${val.toLocaleString('ja-JP')}</td>
-    </tr>`).join('');
-  const html = `<!DOCTYPE html>
-<html lang="ja">
-<head>
-<meta charset="UTF-8">
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;800&display=swap');
-  *{box-sizing:border-box;margin:0;padding:0;}
-  body{background:#0f1423;color:#e8eaf0;font-family:'Noto Sans JP',sans-serif;padding:20px;}
-  @media print{body{background:#0f1423 !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}.no-print{display:none!important;}}
-  .header-line{height:3px;margin-bottom:10px;}
-  .label{font-size:11px;font-weight:700;letter-spacing:1px;}
-  .sub{font-size:12px;color:#94a3b8;}
-  .name{font-size:26px;font-weight:800;color:#f0f2f6;margin:6px 0 2px;}
-  .sep{height:1px;background:#ffffff20;margin:10px 0;}
-  .section-title{font-size:14px;font-weight:700;color:#d4a853;margin:14px 0 6px;}
-  table{width:100%;border-collapse:collapse;}
-  th{background:#0d1220;color:#d4a853;font-size:11px;font-weight:700;padding:6px 8px;text-align:left;letter-spacing:1px;}
-  .total-box{background:#2a1a08;border:1px solid #d4a85360;border-radius:6px;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;margin:10px 0;}
-  .total-label{font-size:13px;font-weight:700;color:#d4a853;}
-  .total-val{font-size:16px;font-weight:800;color:#d4a853;}
-  .gross-box{border-radius:8px;padding:14px 16px;display:flex;flex-direction:column;gap:6px;margin-top:12px;}
-  .gross-row{display:flex;justify-content:space-between;align-items:center;}
-</style>
-</head>
-<body>
-<div class="header-line" style="background:${gc};"></div>
-<div style="display:flex;justify-content:space-between;align-items:flex-start;">
-  <div>
-    <div class="label" style="color:${gc};">SITE REPORT</div>
-    <div class="name">${site.name}</div>
-    <div class="sub">完了年月: ${site.month}</div>
-  </div>
-  <div style="text-align:right;">
-    <div class="sub">発行 ${today}</div>
-  </div>
-</div>
-<div class="sep"></div>
-<div class="section-title">売　上</div>
-<table>
-  <thead><tr><th>項目</th><th style="text-align:right;">金額</th></tr></thead>
-  <tbody>
-    <tr style="background:#14192e"><td style="padding:6px 8px;color:#94a3b8;font-size:13px;">請負金額（税抜）</td><td style="padding:6px 8px;text-align:right;color:#f0f2f6;font-weight:700;font-size:13px;">¥${(+site.contract||0).toLocaleString('ja-JP')}</td></tr>
-    <tr style="background:#19203a"><td style="padding:6px 8px;color:#94a3b8;font-size:13px;">請負金額（税込）</td><td style="padding:6px 8px;text-align:right;color:#f0f2f6;font-weight:700;font-size:13px;">¥${(site.contractTax||Math.round((+site.contract||0)*1.1)).toLocaleString('ja-JP')}</td></tr>
-  </tbody>
-</table>
-<div class="section-title">直接経費</div>
-<table>
-  <thead><tr><th>項目</th><th style="text-align:right;">金額</th></tr></thead>
-  <tbody>${costRowsHtml}</tbody>
-</table>
-<div class="total-box">
-  <span class="total-label">直接経費合計</span>
-  <span class="total-val">¥${totalCost.toLocaleString('ja-JP')}</span>
-</div>
-<div class="gross-box" style="background:${gcDk};border:1px solid ${gc}40;">
-  <div class="gross-row">
-    <span style="font-size:15px;font-weight:700;color:#dce0e8;">粗　利　益</span>
-    <span style="font-size:22px;font-weight:800;color:${gc};">¥${gross.toLocaleString('ja-JP')}</span>
-  </div>
-  <div class="gross-row">
-    <span style="font-size:13px;font-weight:700;color:#94a3b8;">粗　利　率</span>
-    <span style="font-size:16px;font-weight:800;color:${gc};">${PCT(rate)}</span>
-  </div>
-</div>
-<button onclick="window.close()" style="position:fixed;top:16px;right:16px;z-index:9999;background:#d4a853;color:#0f1423;border:none;border-radius:8px;padding:10px 20px;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;" class="no-print">✕ 閉じる</button></body></html>`;
-  const printDiv=document.createElement('div');
-  printDiv.id='print-area';
-  const bodyMatch=html.match(/<body[^>]*>([\s\S]*)<\/body>/i);const styleMatch=html.match(/<style[^>]*>([\s\S]*?)<\/style>/i);printDiv.innerHTML=bodyMatch?bodyMatch[1]:html;const pageStyle=document.createElement('style');pageStyle.id='print-page-style';pageStyle.textContent=styleMatch?styleMatch[1]:'';document.head.appendChild(pageStyle);
-  document.body.appendChild(printDiv);
-  const printStyle=document.createElement('style');
-  printStyle.id='print-style';
-  printStyle.textContent='@media print{body > *:not(#print-area){display:none !important;} #print-area{display:block !important;}} @media screen{#print-area{display:none;}}';
-  document.head.appendChild(printStyle);
-  const cleanup=()=>{if(printDiv.parentNode)printDiv.parentNode.removeChild(printDiv);if(printStyle.parentNode)printStyle.parentNode.removeChild(printStyle);if(pageStyle.parentNode)pageStyle.parentNode.removeChild(pageStyle);window.removeEventListener('afterprint',cleanup);};
-  window.addEventListener('afterprint',cleanup);
-  setTimeout(()=>{window.print();},100);
+const PRINT_CSS = `
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;800&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Noto Sans JP', sans-serif; color: #1a1a1a; background: #fff; padding: 32px 40px; line-height: 1.5; }
+  .accent-bar { height: 4px; background: linear-gradient(90deg, #d4a853, #b8882a); margin-bottom: 20px; border-radius: 2px; }
+  .header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 8px; }
+  .label-tag { font-size: 10px; letter-spacing: 3px; color: #b8882a; font-weight: 700; }
+  .title { font-size: 28px; font-weight: 800; margin-bottom: 4px; letter-spacing: -0.5px; }
+  .subtitle { font-size: 13px; color: #666; margin-bottom: 18px; }
+  .divider-gold { height: 1px; background: linear-gradient(90deg, transparent, #d4a853, transparent); margin: 16px 0; }
+  .divider { height: 1px; background: #e5e5e5; margin: 12px 0; }
+  .section-title { font-size: 11px; letter-spacing: 2px; color: #b8882a; font-weight: 700; margin: 24px 0 12px; text-transform: uppercase; }
+  .row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
+  .row .label { color: #666; }
+  .row .value { font-weight: 700; color: #1a1a1a; }
+  .row-bold { padding: 12px 0; border-bottom: 2px solid #d4a853; }
+  .row-bold .label { font-size: 14px; color: #1a1a1a; font-weight: 700; }
+  .row-bold .value { font-size: 18px; color: #b8882a; }
+  .row-grand { background: linear-gradient(135deg, #fef8e8, #fdf3d5); border: 2px solid #d4a853; border-radius: 10px; padding: 16px 20px; display: flex; justify-content: space-between; align-items: center; margin-top: 16px; }
+  .row-grand .label { font-size: 14px; font-weight: 700; }
+  .row-grand .value { font-size: 26px; font-weight: 800; color: #b8882a; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }
+  th { background: #f8f5ed; color: #b8882a; padding: 10px 8px; text-align: left; font-weight: 700; font-size: 11px; letter-spacing: 1px; border-bottom: 2px solid #d4a853; }
+  td { padding: 10px 8px; border-bottom: 1px solid #f0f0f0; }
+  tr.sun td { background: #fef2f2; color: #c92a2a; }
+  .num { text-align: right; font-feature-settings: "tnum"; }
+  .footer { margin-top: 32px; padding-top: 16px; border-top: 1px solid #e5e5e5; font-size: 10px; color: #999; text-align: center; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin: 16px 0; }
+  .stat { background: #f8f9fb; border: 1px solid #e5e5e5; border-radius: 8px; padding: 12px; text-align: center; }
+  .stat-label { font-size: 10px; color: #666; letter-spacing: 1px; margin-bottom: 4px; }
+  .stat-value { font-size: 15px; font-weight: 800; color: #1a1a1a; }
+  .stat-value.green { color: #2c8a4f; }
+  .stat-value.orange { color: #c97a4a; }
+  .stat-value.red { color: #c92a2a; }
+  @media print {
+    body { padding: 16mm 18mm; }
+    @page { size: A4; margin: 0; }
+  }
+`;
+
+const YEN_PRINT = (n) => `¥${(+n||0).toLocaleString("ja-JP")}`;
+
+async function downloadPayslipPDF(emp, month, baseWage, sundayBonus, sundayDays, siteAllowance, grandTotal, detail) {
+  const rows = detail.map(d => `
+    <tr class="${d.isSun?"sun":""}">
+      <td><b>${d.date.slice(5)}</b></td>
+      <td><b>${d.dow}</b></td>
+      <td>${d.site}</td>
+      <td>${d.hours===1?"全日":"半日"}${d.isSun?` <span style="color:#c92a2a;font-size:10px">+${YEN_PRINT(d.bonus)}</span>`:""}</td>
+      <td class="num"><b>${YEN_PRINT(d.wage+d.bonus)}</b></td>
+    </tr>
+  `).join("");
+
+  const html = `
+    <!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8">
+    <title>給与明細_${emp.name}_${month}</title>
+    <style>${PRINT_CSS}</style></head><body>
+    <div class="accent-bar"></div>
+    <div class="header">
+      <div>
+        <div class="label-tag">PAYSLIP</div>
+        <div class="title">${emp.name}</div>
+        <div class="subtitle">${emp.role} ・ ${month.replace("-","年")}月分</div>
+      </div>
+      <div style="text-align:right;font-size:11px;color:#666">
+        発行日: ${todayStr()}<br>
+        日給単価: ${YEN_PRINT(emp.dailyWage)}<br>
+        出勤日数: ${detail.reduce((a,d)=>a+d.hours,0)}日
+      </div>
+    </div>
+
+    <div class="section-title">支給内訳</div>
+    <div class="row"><span class="label">基本給</span><span class="value">${YEN_PRINT(baseWage)}</span></div>
+    ${sundayBonus>0?`<div class="row"><span class="label">休日出勤手当（日曜${sundayDays}日 × ¥1,000）</span><span class="value" style="color:#c92a2a">+${YEN_PRINT(sundayBonus)}</span></div>`:""}
+    ${+siteAllowance>0?`<div class="row"><span class="label">現場手当</span><span class="value" style="color:#b8882a">+${YEN_PRINT(+siteAllowance)}</span></div>`:""}
+
+    <div class="row-grand">
+      <span class="label">支給合計</span>
+      <span class="value">${YEN_PRINT(grandTotal)}</span>
+    </div>
+
+    <div class="section-title">出勤明細 (${detail.length}件)</div>
+    <table>
+      <thead><tr><th>日付</th><th>曜</th><th>現場名</th><th>区分</th><th class="num">金額</th></tr></thead>
+      <tbody>${rows||'<tr><td colspan="5" style="text-align:center;color:#999;padding:24px">出勤記録なし</td></tr>'}</tbody>
+    </table>
+
+    <div class="footer">この書類は ${todayStr()} に発行されました</div>
+    </body></html>
+  `;
+  openPrintWindow(html, `給与明細_${emp.name}_${month}`);
 }
 
-function downloadScPDF(sc,month,totalCount,totalCost,detail){
-  const today=todayStr();
-  const rows=detail.map((d,i)=>`
-    <tr style="background:${i%2===0?'#14192e':'#19203a'}">
-      <td style="padding:6px 8px;color:#94a3b8;font-size:13px;">${d.date.slice(5)}</td>
-      <td style="padding:6px 8px;color:#82b8e0;font-weight:700;font-size:13px;">${d.dow}</td>
-      <td style="padding:6px 8px;color:#c0c8d8;font-size:13px;">${d.site}</td>
-      <td style="padding:6px 8px;color:#d4a853;font-size:13px;text-align:center;">${d.count}人</td>
-      <td style="padding:6px 8px;text-align:right;color:#e07b4a;font-weight:700;font-size:13px;">¥${d.cost.toLocaleString('ja-JP')}</td>
-    </tr>`).join('');
-  const html=`<!DOCTYPE html>
-<html lang="ja"><head><meta charset="UTF-8">
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;800&display=swap');
-*{box-sizing:border-box;margin:0;padding:0;}
-body{background:#0f1423;color:#e8eaf0;font-family:'Noto Sans JP',sans-serif;padding:20px;}
-@media print{body{background:#0f1423 !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}.no-print{display:none!important;}}
-.hl{height:3px;background:#e07b4a;margin-bottom:10px;}
-.lbl{font-size:11px;color:#e07b4a;font-weight:700;letter-spacing:1px;}
-.sub{font-size:12px;color:#94a3b8;}
-.nm{font-size:26px;font-weight:800;color:#f0f2f6;margin:6px 0 2px;}
-.sep{height:1px;background:#ffffff20;margin:10px 0;}
-.row{display:flex;justify-content:space-between;background:#19203a;border-radius:6px;padding:8px 12px;margin-bottom:4px;}
-.rl{font-size:13px;color:#94a3b8;}
-.rv{font-size:13px;font-weight:700;color:#f0f2f6;}
-.tb{background:#e07b4a;border-radius:8px;padding:12px 16px;display:flex;justify-content:space-between;margin:12px 0;}
-.tl{font-size:14px;font-weight:700;color:#0f1423;}
-.tv{font-size:20px;font-weight:800;color:#0f1423;}
-table{width:100%;border-collapse:collapse;margin-top:8px;}
-th{background:#0d1220;color:#e07b4a;font-size:11px;font-weight:700;padding:6px 8px;text-align:left;letter-spacing:1px;}
-.dt{font-size:14px;font-weight:700;color:#e07b4a;margin-top:16px;margin-bottom:6px;}
-</style></head><body>
-<div class="hl"></div>
-<div style="display:flex;justify-content:space-between;align-items:flex-start;">
-  <div><div class="lbl">SUBCONTRACT INVOICE</div>
-  <div class="nm">${sc.company}</div>
-  <div class="sub">担当: ${sc.contact} · ${month.replace('-','年')}月分</div></div>
-  <div style="text-align:right;"><div class="sub">発行 ${today}</div></div>
-</div>
-<div class="sep"></div>
-<div class="row"><span class="rl">日当単価（1人）</span><span class="rv">¥${sc.dailyRate.toLocaleString('ja-JP')}</span></div>
-<div class="row"><span class="rl">延べ稼働人数</span><span class="rv">${totalCount}人</span></div>
-<div class="tb"><span class="tl">支払合計</span><span class="tv">¥${totalCost.toLocaleString('ja-JP')}</span></div>
-<div class="dt">稼働明細 (${detail.length}日)</div>
-<table><thead><tr>
-<th>日付</th><th>曜日</th><th>現場</th><th style="text-align:center;">人数</th><th style="text-align:right;">金額</th>
-</tr></thead><tbody>${rows}</tbody></table>
-<button onclick="window.close()" style="position:fixed;top:16px;right:16px;z-index:9999;background:#d4a853;color:#0f1423;border:none;border-radius:8px;padding:10px 20px;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;" class="no-print">✕ 閉じる</button></body></html>`;
-    const printDiv=document.createElement('div');
-  printDiv.id='print-area';
-  const bodyMatch=html.match(/<body[^>]*>([\s\S]*)<\/body>/i);const styleMatch=html.match(/<style[^>]*>([\s\S]*?)<\/style>/i);printDiv.innerHTML=bodyMatch?bodyMatch[1]:html;const pageStyle=document.createElement('style');pageStyle.id='print-page-style';pageStyle.textContent=styleMatch?styleMatch[1]:'';document.head.appendChild(pageStyle);
-  document.body.appendChild(printDiv);
-  const printStyle=document.createElement('style');
-  printStyle.id='print-style';
-  printStyle.textContent='@media print{body > *:not(#print-area){display:none !important;} #print-area{display:block !important;}} @media screen{#print-area{display:none;}}';
-  document.head.appendChild(printStyle);
-  const cleanup=()=>{if(printDiv.parentNode)printDiv.parentNode.removeChild(printDiv);if(printStyle.parentNode)printStyle.parentNode.removeChild(printStyle);if(pageStyle.parentNode)pageStyle.parentNode.removeChild(pageStyle);window.removeEventListener('afterprint',cleanup);};
-  window.addEventListener('afterprint',cleanup);
-  setTimeout(()=>{window.print();},100);
+async function downloadSitePDF(site, labor, totalCost, gross, rate) {
+  const gc = gross>=0 ? "green" : "red";
+  const taxInc = site.contractTax || Math.round((+site.contract||0)*1.1);
+  const tax = taxInc - (+site.contract||0);
+
+  const costRows = [
+    ["人件費（従業員）", labor.empWage, "#2a6db8"],
+    ["人件費（外注）",   labor.scCost,  "#c97a4a"],
+    ...COST_KEYS.map(k => [k, +site[k]||0, "#444"]),
+  ].filter(([,v]) => v > 0);
+
+  const costRowsHtml = costRows.map(([lbl,val,color]) =>
+    `<div class="row"><span class="label" style="color:${color}">${lbl}</span><span class="value">${YEN_PRINT(val)}</span></div>`
+  ).join("");
+
+  const html = `
+    <!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8">
+    <title>現場報告書_${site.name}_${site.month}</title>
+    <style>${PRINT_CSS}</style></head><body>
+    <div class="accent-bar"></div>
+    <div class="header">
+      <div>
+        <div class="label-tag">SITE REPORT</div>
+        <div class="title">${site.name}</div>
+        <div class="subtitle">完了年月: ${site.month}</div>
+      </div>
+      <div style="text-align:right;font-size:11px;color:#666">発行日: ${todayStr()}</div>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div class="stat-label">経費合計</div><div class="stat-value orange">${YEN_PRINT(totalCost)}</div></div>
+      <div class="stat"><div class="stat-label">粗利益</div><div class="stat-value ${gc}">${YEN_PRINT(gross)}</div></div>
+      <div class="stat"><div class="stat-label">粗利率</div><div class="stat-value ${gc}">${(rate*100).toFixed(1)}%</div></div>
+    </div>
+
+    <div class="section-title">売 上</div>
+    <div class="row"><span class="label">請負金額（税抜）</span><span class="value">${YEN_PRINT(site.contract)}</span></div>
+    <div class="row"><span class="label">請負金額（税込）</span><span class="value">${YEN_PRINT(taxInc)}</span></div>
+    <div class="row"><span class="label">消費税額</span><span class="value">${YEN_PRINT(tax)}</span></div>
+
+    <div class="section-title">直 接 経 費</div>
+    ${costRowsHtml || '<div class="row"><span class="label">経費の入力なし</span><span class="value">—</span></div>'}
+    <div class="row row-bold"><span class="label">直接経費 合計</span><span class="value">${YEN_PRINT(totalCost)}</span></div>
+
+    <div class="row-grand" style="margin-top:24px;${gross<0?'background:linear-gradient(135deg,#fef2f2,#fee);border-color:#c92a2a':''}">
+      <div>
+        <div style="font-size:11px;color:#666;letter-spacing:2px;margin-bottom:4px">粗 利 益</div>
+        <div style="font-size:28px;font-weight:800;color:${gross>=0?'#2c8a4f':'#c92a2a'}">${YEN_PRINT(gross)}</div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:11px;color:#666;letter-spacing:2px;margin-bottom:4px">粗 利 率</div>
+        <div style="font-size:24px;font-weight:800;color:${gross>=0?'#2c8a4f':'#c92a2a'}">${(rate*100).toFixed(1)}%</div>
+      </div>
+    </div>
+
+    <div class="footer">この書類は ${todayStr()} に発行されました</div>
+    </body></html>
+  `;
+  openPrintWindow(html, `現場報告書_${site.name}_${site.month}`);
 }
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
@@ -485,7 +459,7 @@ function TabBar({tabs,active,onChange}) {
 // ══════════════════════════════════════════════════════════════════════════════
 function SitesTab({sites,setSites,attendance,employees,subcontractors}) {
   const [editing,setEditing]=useState(null);
-  const save=(f)=>{if(!f.id)setSites(s=>[...s,{...f,id:`s${siteSeq++}`}]);else setSites(s=>s.map(x=>x.id===f.id?f:x));setEditing(null);};
+  const save=(f)=>{if(!f.id)setSites(s=>[...s,{...f,id:uid("s")}]);else setSites(s=>s.map(x=>x.id===f.id?f:x));setEditing(null);};
   const del=(id)=>{if(window.confirm("この現場を削除しますか？")){setSites(s=>s.filter(x=>x.id!==id));setEditing(null);}};
   if(editing!==null)return <SiteForm site={editing} onSave={save} onDelete={del} onClose={()=>setEditing(null)} attendance={attendance} employees={employees} subcontractors={subcontractors}/>;
   return (
@@ -612,7 +586,7 @@ function SiteForm({site,onSave,onDelete,onClose,attendance,employees,subcontract
 
         <button onClick={()=>onSave(f)} style={s.btnPrimary}>{isNew?"✚ 現場を登録":"💾 保存する"}</button>
         <div style={{height:8}}/>
-        {!isNew&&<PdfButton onClick={()=>{setSaving(true);try{downloadSitePDF(f,labor,totalCost,gross,rate);}catch(e){alert(e.message);}setSaving(false);}} saving={saving}/>}
+        {!isNew&&<PdfButton onClick={async()=>{setSaving(true);try{await downloadSitePDF(f,labor,totalCost,gross,rate);}catch(e){alert(e.message);}setSaving(false);}} saving={saving}/>}
         {!isNew&&<button onClick={()=>onDelete(site.id)} style={s.btnDanger}>🗑 削除</button>}
       </div>
     </div>
@@ -636,9 +610,10 @@ function AttendanceTab({sites,employees,subcontractors,attendance,setAttendance}
       const day=prev[selDate]||{employees:[],subcontractors:[]};
       let emps=[...(day.employees||[])];
       const idx=emps.findIndex(r=>r.empId===empId);
+      const siteName=siteId?(sites.find(s=>s.id===siteId)?.name||""):"";
       if(!siteId)emps=emps.filter(r=>r.empId!==empId);
-      else if(idx>=0)emps[idx]={empId,siteId,hours};
-      else emps.push({empId,siteId,hours});
+      else if(idx>=0)emps[idx]={empId,siteId,siteName,hours};
+      else emps.push({empId,siteId,siteName,hours});
       return {...prev,[selDate]:{...day,employees:emps}};
     });
   };
@@ -647,9 +622,10 @@ function AttendanceTab({sites,employees,subcontractors,attendance,setAttendance}
       const day=prev[selDate]||{employees:[],subcontractors:[]};
       let scs=[...(day.subcontractors||[])];
       const idx=scs.findIndex(r=>r.scId===scId);
+      const siteName=siteId?(sites.find(s=>s.id===siteId)?.name||""):"";
       if(!siteId||count<=0)scs=scs.filter(r=>r.scId!==scId);
-      else if(idx>=0)scs[idx]={scId,siteId,count};
-      else scs.push({scId,siteId,count});
+      else if(idx>=0)scs[idx]={scId,siteId,siteName,count};
+      else scs.push({scId,siteId,siteName,count});
       return {...prev,[selDate]:{...day,subcontractors:scs}};
     });
   };
@@ -689,7 +665,7 @@ function AttendanceTab({sites,employees,subcontractors,attendance,setAttendance}
             {isOut&&<Divider/>}
             <FSelect label="" value={rec.siteId} onChange={v=>setEmpRec(emp.id,v,rec.hours||1)}>
               <option value="">— 休み / 未入力 —</option>
-              {sites.map(st=><option key={st.id} value={st.id}>{st.name}</option>)}
+              {sites.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
             </FSelect>
             {rec.siteId&&(
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:-4}}>
@@ -726,7 +702,7 @@ function AttendanceTab({sites,employees,subcontractors,attendance,setAttendance}
             </div>
             <FSelect label="" value={rec.siteId} onChange={v=>setScRec(sc.id,v,rec.count||1)}>
               <option value="">— 未入力 —</option>
-              {sites.map(st=><option key={st.id} value={st.id}>{st.name}</option>)}
+              {sites.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
             </FSelect>
             {rec.siteId&&(
               <div>
@@ -773,10 +749,11 @@ function PayrollTab({employees,subcontractors,sites,attendance}) {
       const rec=((attendance[d]||{}).employees||[]).find(r=>r.empId===emp.id);
       if(rec&&rec.siteId){
         const site=sites.find(s=>s.id===rec.siteId);
+        const siteName=site?.name || rec.siteName || "(削除された現場)";
         const isSun=new Date(d).getDay()===0;
         const wage=emp.dailyWage*rec.hours;const bonus=isSun?SUNDAY_BONUS*rec.hours:0;
         totalDays+=rec.hours;baseWage+=wage;sundayBonus+=bonus;
-        detail.push({date:d,dow:getDow(d),site:site?.name||"不明",hours:rec.hours,wage,isSun,bonus});
+        detail.push({date:d,dow:getDow(d),site:siteName,hours:rec.hours,wage,isSun,bonus,deleted:!site});
       }
     });
     return {emp,totalDays,baseWage,sundayBonus,totalWage:baseWage+sundayBonus,detail};
@@ -787,9 +764,11 @@ function PayrollTab({employees,subcontractors,sites,attendance}) {
     days.forEach(d=>{
       const rec=((attendance[d]||{}).subcontractors||[]).find(r=>r.scId===sc.id);
       if(rec&&rec.siteId&&rec.count>0){
-        const site=sites.find(s=>s.id===rec.siteId);const cost=sc.dailyRate*rec.count;
+        const site=sites.find(s=>s.id===rec.siteId);
+        const siteName=site?.name || rec.siteName || "(削除された現場)";
+        const cost=sc.dailyRate*rec.count;
         totalCount+=rec.count;totalCost+=cost;
-        detail.push({date:d,dow:getDow(d),site:site?.name||"不明",count:rec.count,cost});
+        detail.push({date:d,dow:getDow(d),site:siteName,count:rec.count,cost,deleted:!site});
       }
     });
     return {sc,totalCount,totalCost,detail};
@@ -902,7 +881,7 @@ function PayslipView({summary,month,onClose}) {
   return (
     <div style={{minHeight:"100vh",background:C.bg,fontFamily:"'Noto Sans JP',sans-serif"}}>
       <BackHeader title="給与明細書" onClose={onClose}
-        right={<PdfButton onClick={()=>{setSaving(true);try{downloadPayslipPDF(emp,month,baseWage,sundayBonus,sundayDays,siteAllowance,grandTotal,detail);}catch(e){alert(e.message);}setSaving(false);}} saving={saving}/>}/>
+        right={<PdfButton onClick={async()=>{setSaving(true);try{await downloadPayslipPDF(emp,month,baseWage,sundayBonus,sundayDays,siteAllowance,grandTotal,detail);}catch(e){alert(e.message);}setSaving(false);}} saving={saving}/>}/>
       <div style={{padding:"16px 16px 100px"}}>
         {/* Hero */}
         <div style={{background:`linear-gradient(135deg,${C.bgCard},${C.bgDeep})`,border:`1px solid ${C.gold}40`,borderRadius:20,padding:"22px 20px",marginBottom:16,position:"relative",overflow:"hidden"}}>
@@ -999,12 +978,10 @@ function PayslipView({summary,month,onClose}) {
 
 // ── 外注費明細 ────────────────────────────────────────────────────────────────
 function ScInvoiceView({summary,month,onClose}) {
-  const [saving,setSaving]=useState(false);
   const {sc,totalCount,totalCost,detail}=summary;
   return (
     <div style={{minHeight:"100vh",background:C.bg,fontFamily:"'Noto Sans JP',sans-serif"}}>
-      <BackHeader title="外注費明細" onClose={onClose}
-        right={<PdfButton onClick={()=>{setSaving(true);try{downloadScPDF(sc,month,totalCount,totalCost,detail);}catch(e){alert(e.message);}setSaving(false);}} saving={saving}/>}/>
+      <BackHeader title="外注費明細" onClose={onClose}/>
       <div style={{padding:"16px 16px 100px"}}>
         <div style={{background:`linear-gradient(135deg,${C.bgCard},${C.bgDeep})`,border:`1px solid ${C.orange}40`,borderRadius:20,padding:"22px 20px",marginBottom:16,position:"relative",overflow:"hidden"}}>
           <div style={{position:"absolute",top:10,right:18,fontSize:10,color:C.orange,fontWeight:700,letterSpacing:2}}>SUBCONTRACT</div>
@@ -1053,9 +1030,9 @@ function ScInvoiceView({summary,month,onClose}) {
 function EmployeesTab({employees,setEmployees,subcontractors,setSubcontractors}) {
   const [editing,setEditing]=useState(null);
   const [editingSc,setEditingSc]=useState(null);
-  const saveEmp=(f)=>{if(!f.id)setEmployees(e=>[...e,{...f,id:`e${empSeq++}`}]);else setEmployees(e=>e.map(x=>x.id===f.id?f:x));setEditing(null);};
+  const saveEmp=(f)=>{if(!f.id)setEmployees(e=>[...e,{...f,id:uid("e")}]);else setEmployees(e=>e.map(x=>x.id===f.id?f:x));setEditing(null);};
   const delEmp=(id)=>{if(window.confirm("削除しますか？")){setEmployees(e=>e.filter(x=>x.id!==id));setEditing(null);}};
-  const saveSc=(f)=>{if(!f.id)setSubcontractors(s=>[...s,{...f,id:`sc${scSeq++}`}]);else setSubcontractors(s=>s.map(x=>x.id===f.id?f:x));setEditingSc(null);};
+  const saveSc=(f)=>{if(!f.id)setSubcontractors(s=>[...s,{...f,id:uid("sc")}]);else setSubcontractors(s=>s.map(x=>x.id===f.id?f:x));setEditingSc(null);};
   const delSc=(id)=>{if(window.confirm("削除しますか？")){setSubcontractors(s=>s.filter(x=>x.id!==id));setEditingSc(null);}};
   if(editing)return <EmpForm emp={editing} onSave={saveEmp} onDelete={delEmp} onClose={()=>setEditing(null)}/>;
   if(editingSc)return <ScForm sc={editingSc} onSave={saveSc} onDelete={delSc} onClose={()=>setEditingSc(null)}/>;
@@ -1183,12 +1160,39 @@ export default function App() {
   const [subcontractors,setSubcontractors]=useState(saved?.subcontractors || initSubcontractors);
   const [attendance,setAttendance]=useState(saved?.attendance || initAttendance);
   const [showMenu,setShowMenu]=useState(false);
+  const [showBackups,setShowBackups]=useState(false);
   const [toast,setToast]=useState("");
+  const [backupList,setBackupList]=useState([]);
 
-  // Auto-save on any change
+  // Auto-save on any change + daily rolling backup
   useEffect(()=>{
-    saveState({sites,employees,subcontractors,attendance});
+    const state = {sites,employees,subcontractors,attendance};
+    saveState(state);
+    autoBackup(state); // daily snapshot, keeps last 7 days
   },[sites,employees,subcontractors,attendance]);
+
+  // Auto-backfill siteName snapshots into attendance records whenever sites list is up-to-date.
+  // This ensures the site name is preserved even if the site is later deleted.
+  useEffect(()=>{
+    let changed = false;
+    const next = {};
+    Object.entries(attendance).forEach(([date, day])=>{
+      const emps = (day.employees||[]).map(r=>{
+        const site = sites.find(s=>s.id===r.siteId);
+        if (site && r.siteName !== site.name) { changed = true; return {...r, siteName: site.name}; }
+        if (!site && !r.siteName) { changed = true; return {...r, siteName: "(不明な現場)"}; }
+        return r;
+      });
+      const scs = (day.subcontractors||[]).map(r=>{
+        const site = sites.find(s=>s.id===r.siteId);
+        if (site && r.siteName !== site.name) { changed = true; return {...r, siteName: site.name}; }
+        if (!site && !r.siteName) { changed = true; return {...r, siteName: "(不明な現場)"}; }
+        return r;
+      });
+      next[date] = {...day, employees: emps, subcontractors: scs};
+    });
+    if (changed) setAttendance(next);
+  },[sites]);
 
   const showToast = (msg) => { setToast(msg); setTimeout(()=>setToast(""), 2500); };
 
@@ -1213,6 +1217,22 @@ export default function App() {
       showToast("🔄 初期データに戻しました");
       setShowMenu(false);
     }
+  };
+  const openBackups = () => {
+    setBackupList(listBackups().reverse()); // newest first
+    setShowBackups(true);
+    setShowMenu(false);
+  };
+  const handleRestoreBackup = (date) => {
+    if (!window.confirm(`${date} のバックアップに戻します。現在のデータは上書きされます。よろしいですか？`)) return;
+    const data = restoreBackup(date);
+    if (!data) { alert("バックアップの読み込みに失敗しました"); return; }
+    if (data.sites) setSites(data.sites);
+    if (data.employees) setEmployees(data.employees);
+    if (data.subcontractors) setSubcontractors(data.subcontractors);
+    if (data.attendance) setAttendance(data.attendance);
+    showToast(`✅ ${date} のバックアップに戻しました`);
+    setShowBackups(false);
   };
 
   const tabs=[["attendance","🗓","出勤"],["payroll","💴","給与"],["sites","🏗","現場"],["employees","👷","スタッフ"]];
@@ -1265,6 +1285,8 @@ export default function App() {
                 <input type="file" accept=".json" onChange={handleImport} style={{display:"none"}}/>
               </label>
 
+              <button onClick={openBackups} style={{width:"100%",background:"transparent",border:`1.5px solid ${C.gold}`,borderRadius:11,padding:"12px",fontSize:14,fontWeight:700,color:C.gold,cursor:"pointer",marginBottom:10,fontFamily:"inherit"}}>🕒 自動バックアップから復元</button>
+
               <button onClick={handleReset} style={{width:"100%",background:"transparent",border:`1px solid ${C.red}`,borderRadius:11,padding:"11px",fontSize:13,fontWeight:600,color:C.red,cursor:"pointer",marginBottom:14,fontFamily:"inherit"}}>🗑 全データを初期化</button>
 
               <div style={{borderTop:`1px solid ${C.border}`,paddingTop:14,marginTop:4}}>
@@ -1276,6 +1298,38 @@ export default function App() {
               </div>
 
               <button onClick={()=>setShowMenu(false)} style={{width:"100%",marginTop:16,background:"transparent",border:`1px solid ${C.border}`,borderRadius:11,padding:"11px",fontSize:13,fontWeight:600,color:C.textSub,cursor:"pointer",fontFamily:"inherit"}}>閉じる</button>
+            </div>
+          </div>
+        )}
+
+        {/* Backup list modal */}
+        {showBackups && (
+          <div onClick={()=>setShowBackups(false)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",zIndex:100,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+            <div onClick={e=>e.stopPropagation()} style={{background:C.bgCard,border:`1px solid ${C.gold}40`,borderRadius:18,padding:"22px 20px",width:"100%",maxWidth:380,maxHeight:"80vh",overflow:"auto"}}>
+              <div style={{fontSize:11,color:C.gold,fontWeight:700,letterSpacing:2,marginBottom:6}}>AUTO BACKUP</div>
+              <div style={{fontSize:18,fontWeight:800,color:C.text,marginBottom:6,fontFamily:"'JetBrains Mono',monospace"}}>直近1週間の履歴</div>
+              <div style={{fontSize:11,color:C.textSub,marginBottom:16,lineHeight:1.6}}>日次で自動保存されます。復元したい日付をタップしてください。</div>
+
+              {backupList.length === 0 && (
+                <div style={{background:C.bgDeep,borderRadius:10,padding:"16px",textAlign:"center",color:C.textSub,fontSize:12,border:`1px dashed ${C.border}`}}>
+                  まだバックアップがありません<br/>（明日以降に順次たまります）
+                </div>
+              )}
+
+              {backupList.map((b, i) => (
+                <button key={b.date} onClick={()=>handleRestoreBackup(b.date)}
+                  style={{width:"100%",background:C.bgDeep,border:`1px solid ${i===0?C.gold+"60":C.border}`,borderRadius:11,padding:"12px 14px",marginBottom:8,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",fontFamily:"inherit",transition:"border-color 0.2s"}}
+                  onMouseEnter={e=>e.currentTarget.style.borderColor=C.gold}
+                  onMouseLeave={e=>e.currentTarget.style.borderColor=i===0?C.gold+"60":C.border}>
+                  <div style={{textAlign:"left"}}>
+                    <div style={{fontSize:14,fontWeight:700,color:C.text,fontFamily:"'JetBrains Mono',monospace"}}>{b.date}</div>
+                    <div style={{fontSize:10,color:C.textSub,marginTop:2}}>{i===0?"🕒 最新":"過去のスナップショット"} · {(b.size/1024).toFixed(1)} KB</div>
+                  </div>
+                  <div style={{color:C.gold,fontSize:16}}>↺</div>
+                </button>
+              ))}
+
+              <button onClick={()=>setShowBackups(false)} style={{width:"100%",marginTop:12,background:"transparent",border:`1px solid ${C.border}`,borderRadius:11,padding:"11px",fontSize:13,fontWeight:600,color:C.textSub,cursor:"pointer",fontFamily:"inherit"}}>閉じる</button>
             </div>
           </div>
         )}
