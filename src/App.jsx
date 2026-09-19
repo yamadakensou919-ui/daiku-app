@@ -118,6 +118,22 @@ const initAttendance = {
 function uid(prefix) {
   return `${prefix}${Date.now().toString(36)}${Math.random().toString(36).slice(2,7)}`;
 }
+// Every id that attendance history still references. A newly created site /
+// employee / subcontractor must avoid these, otherwise it inherits the records
+// of an older (often already deleted) entry that happened to use the same id.
+function idsInAttendance(attendance) {
+  const sites=new Set(), emps=new Set(), scs=new Set();
+  Object.values(attendance||{}).forEach(day=>{
+    (day.employees||[]).forEach(r=>{ if(r.siteId)sites.add(r.siteId); if(r.empId)emps.add(r.empId); });
+    (day.subcontractors||[]).forEach(r=>{ if(r.siteId)sites.add(r.siteId); if(r.scId)scs.add(r.scId); });
+  });
+  return {sites,emps,scs};
+}
+function freshId(prefix, taken) {
+  let id=uid(prefix);
+  while(taken && taken.has(id)) id=uid(prefix);
+  return id;
+}
 
 // ── Calc helpers ──────────────────────────────────────────────────────────────
 function calcLaborBySite(siteId,attendance,employees,subcontractors) {
@@ -459,7 +475,13 @@ function TabBar({tabs,active,onChange}) {
 // ══════════════════════════════════════════════════════════════════════════════
 function SitesTab({sites,setSites,attendance,employees,subcontractors}) {
   const [editing,setEditing]=useState(null);
-  const save=(f)=>{if(!f.id)setSites(s=>[...s,{...f,id:uid("s")}]);else setSites(s=>s.map(x=>x.id===f.id?f:x));setEditing(null);};
+  const save=(f)=>{
+    if(!f.id){
+      const taken=new Set([...sites.map(x=>x.id),...idsInAttendance(attendance).sites]);
+      setSites(s=>[...s,{...f,id:freshId("s",taken)}]);
+    } else setSites(s=>s.map(x=>x.id===f.id?f:x));
+    setEditing(null);
+  };
   const del=(id)=>{if(window.confirm("この現場を削除しますか？")){setSites(s=>s.filter(x=>x.id!==id));setEditing(null);}};
   if(editing!==null)return <SiteForm site={editing} onSave={save} onDelete={del} onClose={()=>setEditing(null)} attendance={attendance} employees={employees} subcontractors={subcontractors}/>;
   return (
@@ -1027,12 +1049,24 @@ function ScInvoiceView({summary,month,onClose}) {
 // ══════════════════════════════════════════════════════════════════════════════
 // STAFF TAB
 // ══════════════════════════════════════════════════════════════════════════════
-function EmployeesTab({employees,setEmployees,subcontractors,setSubcontractors}) {
+function EmployeesTab({employees,setEmployees,subcontractors,setSubcontractors,attendance}) {
   const [editing,setEditing]=useState(null);
   const [editingSc,setEditingSc]=useState(null);
-  const saveEmp=(f)=>{if(!f.id)setEmployees(e=>[...e,{...f,id:uid("e")}]);else setEmployees(e=>e.map(x=>x.id===f.id?f:x));setEditing(null);};
+  const saveEmp=(f)=>{
+    if(!f.id){
+      const taken=new Set([...employees.map(x=>x.id),...idsInAttendance(attendance).emps]);
+      setEmployees(e=>[...e,{...f,id:freshId("e",taken)}]);
+    } else setEmployees(e=>e.map(x=>x.id===f.id?f:x));
+    setEditing(null);
+  };
   const delEmp=(id)=>{if(window.confirm("削除しますか？")){setEmployees(e=>e.filter(x=>x.id!==id));setEditing(null);}};
-  const saveSc=(f)=>{if(!f.id)setSubcontractors(s=>[...s,{...f,id:uid("sc")}]);else setSubcontractors(s=>s.map(x=>x.id===f.id?f:x));setEditingSc(null);};
+  const saveSc=(f)=>{
+    if(!f.id){
+      const taken=new Set([...subcontractors.map(x=>x.id),...idsInAttendance(attendance).scs]);
+      setSubcontractors(s=>[...s,{...f,id:freshId("sc",taken)}]);
+    } else setSubcontractors(s=>s.map(x=>x.id===f.id?f:x));
+    setEditingSc(null);
+  };
   const delSc=(id)=>{if(window.confirm("削除しますか？")){setSubcontractors(s=>s.filter(x=>x.id!==id));setEditingSc(null);}};
   if(editing)return <EmpForm emp={editing} onSave={saveEmp} onDelete={delEmp} onClose={()=>setEditing(null)}/>;
   if(editingSc)return <ScForm sc={editingSc} onSave={saveSc} onDelete={delSc} onClose={()=>setEditingSc(null)}/>;
@@ -1171,6 +1205,29 @@ export default function App() {
     autoBackup(state); // daily snapshot, keeps last 7 days
   },[sites,employees,subcontractors,attendance]);
 
+  // One-time integrity check on startup: repair duplicate IDs left behind by an
+  // older version of the app (the first entry keeps its history, later duplicates
+  // get a brand-new id so they start empty instead of showing someone else's data).
+  useEffect(()=>{
+    const used=idsInAttendance(attendance);
+    const fix=(list,setter,prefix,reserved)=>{
+      const seen=new Set(); let changed=false;
+      const next=(list||[]).map(item=>{
+        if(item.id && !seen.has(item.id)){ seen.add(item.id); return item; }
+        changed=true;
+        const id=freshId(prefix,new Set([...seen,...reserved]));
+        seen.add(id);
+        return {...item,id};
+      });
+      if(changed) setter(next);
+      return changed;
+    };
+    const a=fix(sites,setSites,"s",used.sites);
+    const b=fix(employees,setEmployees,"e",used.emps);
+    const c=fix(subcontractors,setSubcontractors,"sc",used.scs);
+    if(a||b||c) setTimeout(()=>showToast("⚠️ 重複していたIDを修正しました"),400);
+  },[]);
+
   // Auto-backfill siteName snapshots into attendance records whenever sites list is up-to-date.
   // This ensures the site name is preserved even if the site is later deleted.
   useEffect(()=>{
@@ -1258,7 +1315,7 @@ export default function App() {
           {tab==="attendance"&&<AttendanceTab sites={sites} employees={employees} subcontractors={subcontractors} attendance={attendance} setAttendance={setAttendance}/>}
           {tab==="payroll"&&<PayrollTab employees={employees} subcontractors={subcontractors} sites={sites} attendance={attendance}/>}
           {tab==="sites"&&<SitesTab sites={sites} setSites={setSites} attendance={attendance} employees={employees} subcontractors={subcontractors}/>}
-          {tab==="employees"&&<EmployeesTab employees={employees} setEmployees={setEmployees} subcontractors={subcontractors} setSubcontractors={setSubcontractors}/>}
+          {tab==="employees"&&<EmployeesTab employees={employees} setEmployees={setEmployees} subcontractors={subcontractors} setSubcontractors={setSubcontractors} attendance={attendance}/>}
         </div>
 
         {/* Bottom nav */}
