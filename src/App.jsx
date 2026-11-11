@@ -84,6 +84,16 @@ const SUNDAY_BONUS = 1000;
 // 有給休暇。現場ではないので、この id はどの現場にも割り当てられない（freshId が回避する）
 const PAID_LEAVE_ID = "__paid_leave__";
 const PAID_LEAVE_NAME = "🏖 有給";
+
+const TARGET_PROFIT_RATE = 0.30;   // 粗利目標率 30%
+const TARGET_LABOR_UNIT = 15000;   // 1人工あたり基準額（円）
+
+// 税抜請負金額から目標人工数を計算（70%を人件費枠とする）
+function calcTargetDays(contract) {
+  const c = +contract || 0;
+  if (c <= 0) return 0;
+  return Math.round(c * (1 - TARGET_PROFIT_RATE) / TARGET_LABOR_UNIT * 10) / 10;
+}
 const COST_KEYS  = ["材料費","外注費","交通費","消耗品","その他"];
 const COST_ICONS = ["🪵","👷","🚗","🔧","📦"];
 const COST_COLORS= ["#d4a853","#e07b4a","#5ba8d4","#9b7de8","#5cc98a"];
@@ -140,16 +150,27 @@ function freshId(prefix, taken) {
 
 // ── Calc helpers ──────────────────────────────────────────────────────────────
 function calcLaborBySite(siteId,attendance,employees,subcontractors) {
-  let empWage=0, scCost=0;
-  Object.values(attendance).forEach(day=>{
+  let empWage=0, scCost=0, empDays=0, scDays=0;
+  const workDates=new Set();
+  Object.entries(attendance).forEach(([date,day])=>{
     (day.employees||[]).forEach(r=>{
-      if(r.siteId===siteId){const e=employees.find(x=>x.id===r.empId);if(e)empWage+=e.dailyWage*r.hours;}
+      if(r.siteId===siteId){
+        const e=employees.find(x=>x.id===r.empId);
+        if(e)empWage+=e.dailyWage*r.hours;
+        empDays+=r.hours; // 人工数（0.5 or 1）
+        workDates.add(date);
+      }
     });
     (day.subcontractors||[]).forEach(r=>{
-      if(r.siteId===siteId){const s=subcontractors.find(x=>x.id===r.scId);if(s)scCost+=s.dailyRate*r.count;}
+      if(r.siteId===siteId){
+        const s=subcontractors.find(x=>x.id===r.scId);
+        if(s)scCost+=s.dailyRate*r.count;
+        scDays+=r.count;
+        workDates.add(date);
+      }
     });
   });
-  return {empWage,scCost,total:empWage+scCost};
+  return {empWage,scCost,empDays,scDays,totalDays:empDays+scDays,workDays:workDates.size,total:empWage+scCost};
 }
 function calcSite(s,laborCost=0) {
   const manualCost=COST_KEYS.reduce((a,k)=>a+(+s[k]||0),0);
@@ -275,8 +296,8 @@ async function downloadSitePDF(site, labor, totalCost, gross, rate) {
   const tax = taxInc - (+site.contract||0);
 
   const costRows = [
-    ["人件費（従業員）", labor.empWage, "#2a6db8"],
-    ["人件費（外注）",   labor.scCost,  "#c97a4a"],
+    [`人件費（従業員 ${labor.empDays||0}人工）`, labor.empWage, "#2a6db8"],
+    [`人件費（外注 ${labor.scDays||0}人工）`,   labor.scCost,  "#c97a4a"],
     ...COST_KEYS.map(k => [k, +site[k]||0, "#444"]),
   ].filter(([,v]) => v > 0);
 
@@ -303,6 +324,34 @@ async function downloadSitePDF(site, labor, totalCost, gross, rate) {
       <div class="stat"><div class="stat-label">粗利益</div><div class="stat-value ${gc}">${YEN_PRINT(gross)}</div></div>
       <div class="stat"><div class="stat-label">粗利率</div><div class="stat-value ${gc}">${(rate*100).toFixed(1)}%</div></div>
     </div>
+
+    ${(labor.totalDays||0)>0?`
+    <div class="section-title">人 工 数</div>
+    <div class="stats">
+      <div class="stat"><div class="stat-label">延べ人工</div><div class="stat-value">${labor.totalDays}人工</div></div>
+      <div class="stat"><div class="stat-label">自社</div><div class="stat-value" style="color:#2a6db8">${labor.empDays}人工</div></div>
+      <div class="stat"><div class="stat-label">外注</div><div class="stat-value orange">${labor.scDays}人工</div></div>
+    </div>
+    <div style="text-align:center;font-size:11px;color:#666;margin-top:-8px;margin-bottom:16px">稼働日数: ${labor.workDays}日</div>
+    `:""}
+
+    ${(() => {
+      const targetDays = calcTargetDays(site.contract);
+      if (targetDays === 0) return "";
+      const actualDays = labor.totalDays || 0;
+      const over = actualDays > targetDays;
+      const diff = Math.round((actualDays - targetDays)*10)/10;
+      const diffColor = over ? "#c92a2a" : "#2c8a4f";
+      return `
+        <div class="section-title">🎯 目標人工数（粗利30%確保）</div>
+        <div class="stats">
+          <div class="stat"><div class="stat-label">目標</div><div class="stat-value" style="color:#b8882a">${targetDays}人工</div></div>
+          <div class="stat"><div class="stat-label">実績</div><div class="stat-value" style="color:${diffColor}">${actualDays}人工</div></div>
+          <div class="stat"><div class="stat-label">${over?"超過":"残り"}</div><div class="stat-value" style="color:${diffColor}">${over?"+"+diff:Math.round((targetDays-actualDays)*10)/10}人工</div></div>
+        </div>
+        <div style="text-align:center;font-size:11px;color:#666;margin-top:-8px;margin-bottom:16px">計算: 税抜 ${YEN_PRINT(+site.contract||0)} × 70% ÷ ${YEN_PRINT(TARGET_LABOR_UNIT)}/人工</div>
+      `;
+    })()}
 
     <div class="section-title">売 上</div>
     <div class="row"><span class="label">請負金額（税抜）</span><span class="value">${YEN_PRINT(site.contract)}</span></div>
@@ -531,15 +580,39 @@ function SiteCard({site,onEdit,attendance,employees,subcontractors}) {
       </div>
       {labor.total>0&&(
         <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap"}}>
-          {labor.empWage>0&&<div style={{display:"flex",alignItems:"center",gap:5,background:C.bgDeep,borderRadius:8,padding:"4px 10px",border:`1px solid ${C.border}`}}><GlowDot color={C.blue}/><span style={{fontSize:10,color:C.textSub}}>自社 {YEN(labor.empWage)}</span></div>}
-          {labor.scCost>0&&<div style={{display:"flex",alignItems:"center",gap:5,background:C.bgDeep,borderRadius:8,padding:"4px 10px",border:`1px solid ${C.border}`}}><GlowDot color={C.orange}/><span style={{fontSize:10,color:C.textSub}}>外注 {YEN(labor.scCost)}</span></div>}
+          {labor.empDays>0&&<div style={{display:"flex",alignItems:"center",gap:5,background:C.bgDeep,borderRadius:8,padding:"4px 10px",border:`1px solid ${C.border}`}}><GlowDot color={C.blue}/><span style={{fontSize:10,color:C.textSub}}>自社 {labor.empDays}人工 · {YEN(labor.empWage)}</span></div>}
+          {labor.scDays>0&&<div style={{display:"flex",alignItems:"center",gap:5,background:C.bgDeep,borderRadius:8,padding:"4px 10px",border:`1px solid ${C.border}`}}><GlowDot color={C.orange}/><span style={{fontSize:10,color:C.textSub}}>外注 {labor.scDays}人工 · {YEN(labor.scCost)}</span></div>}
         </div>
       )}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:14}}>
         <StatBox label="経費合計" value={YEN(totalCost)} color={C.orange}/>
         <StatBox label="粗利益" value={YEN(gross)} color={gc}/>
       </div>
-      <RateBar rate={rate}/>
+      {(() => {
+        const targetDays = calcTargetDays(site.contract);
+        if (targetDays === 0) return <RateBar rate={rate}/>;
+        const actualDays = labor.totalDays || 0;
+        const progress = targetDays > 0 ? actualDays / targetDays : 0;
+        const remaining = Math.max(0, Math.round((targetDays - actualDays)*10)/10);
+        const over = actualDays > targetDays;
+        const progColor = over ? C.red : progress >= 0.8 ? C.orange : C.green;
+        return (
+          <>
+            <div style={{marginBottom:10}}>
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}>
+                <span style={{fontSize:10,color:C.textSub,letterSpacing:1}}>人工 {actualDays}/{targetDays}</span>
+                <span style={{fontSize:11,fontWeight:800,color:progColor,fontFamily:"'JetBrains Mono',monospace"}}>
+                  {over ? `超過 +${Math.round((actualDays-targetDays)*10)/10}人工` : `残り ${remaining}人工`}
+                </span>
+              </div>
+              <div style={{height:4,background:C.bgDeep,borderRadius:99,overflow:"hidden"}}>
+                <div style={{height:"100%",width:`${Math.min(100,progress*100)}%`,background:`linear-gradient(90deg,${progColor}88,${progColor})`,borderRadius:99,transition:"width 0.6s cubic-bezier(.4,0,.2,1)"}}/>
+              </div>
+            </div>
+            <RateBar rate={rate}/>
+          </>
+        );
+      })()}
     </div>
   );
 }
@@ -581,6 +654,43 @@ function SiteForm({site,onSave,onDelete,onClose,attendance,employees,subcontract
             hint={f.contract?`消費税: ${YEN(Math.round((+f.contractTax||0)-(+f.contract||0)))}`:undefined}/>
         </div>
 
+        {/* 目標人工数（粗利30%確保のため） */}
+        {(() => {
+          const targetDays = calcTargetDays(f.contract);
+          if (!f.contract || targetDays === 0) return null;
+          const actualDays = labor.totalDays || 0;
+          const remaining = Math.round((targetDays - actualDays)*10)/10;
+          const over = actualDays > targetDays;
+          const progress = actualDays / targetDays;
+          const progColor = over ? C.red : progress >= 0.8 ? C.orange : C.green;
+          const budgetAmount = Math.round((+f.contract||0) * (1 - TARGET_PROFIT_RATE));
+          return (
+            <div style={{...s.card,borderColor:C.gold+"60",background:`linear-gradient(135deg,${C.bgCard},${C.bgDeep})`}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+                <div style={{fontSize:11,color:C.gold,fontWeight:700,letterSpacing:1}}>🎯 目標人工数</div>
+                <Tag color={C.gold}>粗利30%確保</Tag>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
+                <StatBox label="目標" value={`${targetDays}人工`} color={C.gold} sub/>
+                <StatBox label="実績" value={`${actualDays}人工`} color={progColor} sub/>
+                <StatBox label={over?"超過":"残り"} value={`${over?"+"+Math.round((actualDays-targetDays)*10)/10:remaining}人工`} color={progColor} sub/>
+              </div>
+              <div style={{height:6,background:C.bgDeep,borderRadius:99,overflow:"hidden",marginBottom:10}}>
+                <div style={{height:"100%",width:`${Math.min(100,progress*100)}%`,background:`linear-gradient(90deg,${progColor}88,${progColor})`,borderRadius:99,transition:"width 0.6s"}}/>
+              </div>
+              <div style={{fontSize:10,color:C.textSub,lineHeight:1.6,background:C.bgDeep,borderRadius:8,padding:"8px 12px",border:`1px solid ${C.border}`}}>
+                計算式: 税抜 {YEN(+f.contract)} × 70% ÷ 15,000円/人工<br/>
+                人件費枠: {YEN(budgetAmount)} ・ 目標粗利: {YEN(Math.round((+f.contract||0) * TARGET_PROFIT_RATE))}
+              </div>
+              {over && (
+                <div style={{marginTop:10,background:C.redDk,border:`1px solid ${C.red}`,borderRadius:8,padding:"8px 12px",fontSize:11,color:C.red,fontWeight:700}}>
+                  ⚠️ 目標人工数を超過しています。粗利30%を下回る可能性があります。
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
         <div style={{...s.card,borderColor:labor.total>0?C.blue:C.border}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
             <div style={{fontSize:11,color:C.gold,fontWeight:700,letterSpacing:1}}>👷 人件費</div>
@@ -589,12 +699,19 @@ function SiteForm({site,onSave,onDelete,onClose,attendance,employees,subcontract
           {labor.total===0
             ?<div style={{color:C.textDim,fontSize:12,padding:"8px 0"}}>出勤タブで入力すると自動反映されます</div>
             :<>
+              {/* Person-day summary row */}
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
+                <StatBox label="延べ人工" value={`${labor.totalDays}人工`} color={C.gold} sub/>
+                <StatBox label="自社" value={`${labor.empDays}人工`} color={C.blue} sub/>
+                <StatBox label="外注" value={`${labor.scDays}人工`} color={C.orange} sub/>
+              </div>
+              <div style={{background:C.bgDeep,borderRadius:8,padding:"6px 12px",marginBottom:10,fontSize:10,color:C.textSub,textAlign:"center",border:`1px solid ${C.border}`}}>稼働日数: {labor.workDays}日</div>
               <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:`1px solid ${C.border}`}}>
-                <div style={{display:"flex",alignItems:"center",gap:8}}><GlowDot color={C.blue}/><span style={{fontSize:13,color:C.textSub}}>従業員</span></div>
+                <div style={{display:"flex",alignItems:"center",gap:8}}><GlowDot color={C.blue}/><span style={{fontSize:13,color:C.textSub}}>従業員 ({labor.empDays}人工)</span></div>
                 <span style={{fontSize:13,fontWeight:700,color:C.blue}}>{YEN(labor.empWage)}</span>
               </div>
               <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:`1px solid ${C.border}`}}>
-                <div style={{display:"flex",alignItems:"center",gap:8}}><GlowDot color={C.orange}/><span style={{fontSize:13,color:C.textSub}}>外注（人工）</span></div>
+                <div style={{display:"flex",alignItems:"center",gap:8}}><GlowDot color={C.orange}/><span style={{fontSize:13,color:C.textSub}}>外注 ({labor.scDays}人工)</span></div>
                 <span style={{fontSize:13,fontWeight:700,color:C.orange}}>{YEN(labor.scCost)}</span>
               </div>
               <div style={{display:"flex",justifyContent:"space-between",padding:"10px 0 2px"}}>
