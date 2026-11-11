@@ -1382,7 +1382,54 @@ function SyncBadge({ status }) {
 // ══════════════════════════════════════════════════════════════════════════════
 // ROOT
 // ══════════════════════════════════════════════════════════════════════════════
+// ── PC判定（画面幅900px以上でPC用レイアウト） ──
+function useIsDesktop(minWidth = 900) {
+  const query = `(min-width: ${minWidth}px)`;
+  const [isDesktop, setIsDesktop] = useState(() => typeof window !== "undefined" && window.matchMedia(query).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const onChange = () => setIsDesktop(mq.matches);
+    onChange();
+    mq.addEventListener ? mq.addEventListener("change", onChange) : mq.addListener(onChange);
+    return () => { mq.removeEventListener ? mq.removeEventListener("change", onChange) : mq.removeListener(onChange); };
+  }, [query]);
+  return isDesktop;
+}
+
+// ── PC用サイドバー ──
+function SideNav({ tabs, active, onChange, syncStatus, onOpenMenu }) {
+  return (
+    <div style={{position:"fixed",top:0,left:0,bottom:0,width:220,background:C.bgCard,borderRight:`1px solid ${C.border}`,display:"flex",flexDirection:"column",zIndex:40}}>
+      <div style={{padding:"20px 18px 18px",borderBottom:`1px solid ${C.border}`,display:"flex",alignItems:"center",gap:10}}>
+        <div style={{width:34,height:34,borderRadius:9,background:`linear-gradient(135deg,${C.gold},#b8882a)`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:17,flexShrink:0}}>🏗</div>
+        <div>
+          <div style={{fontSize:9,color:C.textSub,letterSpacing:3,lineHeight:1}}>大工・請負業</div>
+          <div style={{fontSize:16,fontWeight:800,color:C.text,fontFamily:"'JetBrains Mono',monospace",letterSpacing:-0.5,lineHeight:1.3}}>現場 & 給与 管理</div>
+        </div>
+      </div>
+      <div style={{padding:"14px 10px",display:"flex",flexDirection:"column",gap:4,flex:1}}>
+        {tabs.map(([key,icon,label])=>{
+          const isActive = active===key;
+          return (
+            <button key={key} onClick={()=>onChange(key)}
+              style={{display:"flex",alignItems:"center",gap:12,padding:"12px 14px",borderRadius:10,border:"none",cursor:"pointer",textAlign:"left",
+                background:isActive?C.bgDeep:"transparent",boxShadow:isActive?`inset 3px 0 0 ${C.gold}`:"none",transition:"background 0.15s"}}>
+              <span style={{fontSize:20,filter:isActive?"none":"grayscale(1) opacity(0.5)"}}>{icon}</span>
+              <span style={{fontSize:14,fontWeight:700,color:isActive?C.gold:C.textSub}}>{label}</span>
+            </button>
+          );
+        })}
+      </div>
+      <div style={{padding:"14px 14px 18px",borderTop:`1px solid ${C.border}`,display:"flex",alignItems:"center",gap:8}}>
+        <SyncBadge status={syncStatus} />
+        <button onClick={onOpenMenu} style={{background:C.bgDeep,border:`1px solid ${C.border}`,borderRadius:10,padding:"7px 10px",color:C.gold,fontSize:13,fontWeight:700,cursor:"pointer",lineHeight:1,display:"flex",alignItems:"center",gap:6}}>⚙ 設定</button>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
+  const isDesktop = useIsDesktop();
   // ── Auth state ──
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -1552,9 +1599,13 @@ export default function App() {
   return (
     <>
       <style>{css}</style>
-      <div style={{minHeight:"100vh",background:C.bg,color:C.text,fontFamily:"'Noto Sans JP','Hiragino Sans',sans-serif",maxWidth:480,margin:"0 auto",position:"relative"}}>
-        {/* Header */}
-        <div style={{background:C.bgCard,borderBottom:`1px solid ${C.border}`,padding:"14px 20px 12px",position:"sticky",top:0,zIndex:40}}>
+      {isDesktop && <SideNav tabs={tabs} active={tab} onChange={setTab} syncStatus={syncStatus} onOpenMenu={()=>setShowMenu(true)} />}
+      <div style={isDesktop
+        ? {minHeight:"100vh",background:C.bg,color:C.text,fontFamily:"'Noto Sans JP','Hiragino Sans',sans-serif",marginLeft:220,position:"relative"}
+        : {minHeight:"100vh",background:C.bg,color:C.text,fontFamily:"'Noto Sans JP','Hiragino Sans',sans-serif",maxWidth:480,margin:"0 auto",position:"relative"}}>
+        <div style={isDesktop?{maxWidth:1000,margin:"0 auto",position:"relative"}:{}}>
+        {/* Header（スマホのみ。PCはサイドバーに表示） */}
+        {!isDesktop && <div style={{background:C.bgCard,borderBottom:`1px solid ${C.border}`,padding:"14px 20px 12px",position:"sticky",top:0,zIndex:40}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
             <div style={{width:32,height:32,borderRadius:8,background:`linear-gradient(135deg,${C.gold},#b8882a)`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>🏗</div>
             <div>
@@ -1564,20 +1615,22 @@ export default function App() {
             <SyncBadge status={syncStatus} />
             <button onClick={()=>setShowMenu(true)} style={{marginLeft:8,background:C.bgDeep,border:`1px solid ${C.border}`,borderRadius:10,padding:"8px 10px",color:C.gold,fontSize:18,cursor:"pointer",lineHeight:1}}>⚙</button>
           </div>
-        </div>
+        </div>}
 
         {/* Content */}
-        <div style={{paddingBottom:70}}>
+        <div style={{paddingBottom:isDesktop?40:70,paddingTop:isDesktop?12:0}}>
           {tab==="attendance"&&<AttendanceTab sites={sites} employees={employees} subcontractors={subcontractors} attendance={attendance} setAttendance={setAttendance}/>}
           {tab==="payroll"&&<PayrollTab employees={employees} subcontractors={subcontractors} sites={sites} attendance={attendance}/>}
           {tab==="sites"&&<SitesTab sites={sites} setSites={setSites} attendance={attendance} employees={employees} subcontractors={subcontractors}/>}
           {tab==="employees"&&<EmployeesTab employees={employees} setEmployees={setEmployees} subcontractors={subcontractors} setSubcontractors={setSubcontractors}/>}
         </div>
 
-        {/* Bottom nav */}
-        <div style={{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:480,zIndex:40}}>
-          <TabBar tabs={tabs} active={tab} onChange={setTab}/>
         </div>
+
+        {/* Bottom nav（スマホのみ） */}
+        {!isDesktop && <div style={{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:480,zIndex:40}}>
+          <TabBar tabs={tabs} active={tab} onChange={setTab}/>
+        </div>}
 
         {/* Settings menu */}
         {showMenu && (
