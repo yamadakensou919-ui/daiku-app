@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
+import { auth, db, signInWithEmailAndPassword, onAuthStateChanged, signOut, doc, setDoc, getDoc, onSnapshot } from "./firebase";
 
 
 // ── localStorage helpers ──────────────────────────────────────────────────────
@@ -32,6 +33,35 @@ function importData(file) {
     };
     reader.onerror = reject;
     reader.readAsText(file);
+  });
+}
+
+// ── Firebase cloud sync ───────────────────────────────────────────────────────
+let _firebaseSaveTimer = null;
+async function saveToCloud(uid, state) {
+  if (!uid) return;
+  try {
+    await setDoc(doc(db, "users", uid, "data", "main"), {
+      ...state,
+      updatedAt: Date.now(),
+    });
+  } catch(e) { console.warn("Cloud save failed:", e); }
+}
+function debouncedSaveToCloud(uid, state) {
+  clearTimeout(_firebaseSaveTimer);
+  _firebaseSaveTimer = setTimeout(() => saveToCloud(uid, state), 1200);
+}
+async function loadFromCloud(uid) {
+  if (!uid) return null;
+  try {
+    const snap = await getDoc(doc(db, "users", uid, "data", "main"));
+    return snap.exists() ? snap.data() : null;
+  } catch(e) { console.warn("Cloud load failed:", e); return null; }
+}
+function subscribeCloud(uid, callback) {
+  if (!uid) return () => {};
+  return onSnapshot(doc(db, "users", uid, "data", "main"), (snap) => {
+    if (snap.exists()) callback(snap.data());
   });
 }
 
@@ -81,10 +111,6 @@ const YEN = (n) => (n==null||n===""||isNaN(+n) ? "—" : `¥${(+n).toLocaleStrin
 const PCT = (n) => (n==null||isNaN(+n) ? "—" : `${(+n*100).toFixed(1)}%`);
 const todayStr = () => new Date().toISOString().slice(0,10);
 const SUNDAY_BONUS = 1000;
-// 有給休暇。現場ではないので、この id はどの現場にも割り当てられない（freshId が回避する）
-const PAID_LEAVE_ID = "__paid_leave__";
-const PAID_LEAVE_NAME = "🏖 有給";
-
 const TARGET_PROFIT_RATE = 0.30;   // 粗利目標率 30%
 const TARGET_LABOR_UNIT = 15000;   // 1人工あたり基準額（円）
 
@@ -130,22 +156,6 @@ const initAttendance = {
 // Unique ID generator - never collides even after page reload
 function uid(prefix) {
   return `${prefix}${Date.now().toString(36)}${Math.random().toString(36).slice(2,7)}`;
-}
-// Every id that attendance history still references. A newly created site /
-// employee / subcontractor must avoid these, otherwise it inherits the records
-// of an older (often already deleted) entry that happened to use the same id.
-function idsInAttendance(attendance) {
-  const sites=new Set(), emps=new Set(), scs=new Set();
-  Object.values(attendance||{}).forEach(day=>{
-    (day.employees||[]).forEach(r=>{ if(r.siteId)sites.add(r.siteId); if(r.empId)emps.add(r.empId); });
-    (day.subcontractors||[]).forEach(r=>{ if(r.siteId)sites.add(r.siteId); if(r.scId)scs.add(r.scId); });
-  });
-  return {sites,emps,scs};
-}
-function freshId(prefix, taken) {
-  let id=uid(prefix);
-  while(taken && taken.has(id)) id=uid(prefix);
-  return id;
 }
 
 // ── Calc helpers ──────────────────────────────────────────────────────────────
@@ -238,13 +248,13 @@ const PRINT_CSS = `
 
 const YEN_PRINT = (n) => `¥${(+n||0).toLocaleString("ja-JP")}`;
 
-async function downloadPayslipPDF(emp, month, baseWage, sundayBonus, sundayDays, siteAllowance, grandTotal, detail, paidDays = 0, paidWage = 0) {
+async function downloadPayslipPDF(emp, month, baseWage, sundayBonus, sundayDays, siteAllowance, grandTotal, detail) {
   const rows = detail.map(d => `
     <tr class="${d.isSun?"sun":""}">
       <td><b>${d.date.slice(5)}</b></td>
       <td><b>${d.dow}</b></td>
       <td>${d.site}</td>
-      <td>${d.paid?"有給":(d.hours===1?"全日":"半日")}${d.isSun?` <span style="color:#c92a2a;font-size:10px">+${YEN_PRINT(d.bonus)}</span>`:""}</td>
+      <td>${d.hours===1?"全日":"半日"}${d.isSun?` <span style="color:#c92a2a;font-size:10px">+${YEN_PRINT(d.bonus)}</span>`:""}</td>
       <td class="num"><b>${YEN_PRINT(d.wage+d.bonus)}</b></td>
     </tr>
   `).join("");
@@ -263,13 +273,12 @@ async function downloadPayslipPDF(emp, month, baseWage, sundayBonus, sundayDays,
       <div style="text-align:right;font-size:11px;color:#666">
         発行日: ${todayStr()}<br>
         日給単価: ${YEN_PRINT(emp.dailyWage)}<br>
-        出勤日数: ${detail.filter(d=>!d.paid).reduce((a,d)=>a+d.hours,0)}日${paidDays>0?`<br>有給取得: ${paidDays}日`:""}
+        出勤日数: ${detail.reduce((a,d)=>a+d.hours,0)}日
       </div>
     </div>
 
     <div class="section-title">支給内訳</div>
     <div class="row"><span class="label">基本給</span><span class="value">${YEN_PRINT(baseWage)}</span></div>
-    ${paidWage>0?`<div class="row"><span class="label">有給休暇（${paidDays}日 × ${YEN_PRINT(emp.dailyWage)}）</span><span class="value" style="color:#b8882a">+${YEN_PRINT(paidWage)}</span></div>`:""}
     ${sundayBonus>0?`<div class="row"><span class="label">休日出勤手当（日曜${sundayDays}日 × ¥1,000）</span><span class="value" style="color:#c92a2a">+${YEN_PRINT(sundayBonus)}</span></div>`:""}
     ${+siteAllowance>0?`<div class="row"><span class="label">現場手当</span><span class="value" style="color:#b8882a">+${YEN_PRINT(+siteAllowance)}</span></div>`:""}
 
@@ -528,13 +537,7 @@ function TabBar({tabs,active,onChange}) {
 // ══════════════════════════════════════════════════════════════════════════════
 function SitesTab({sites,setSites,attendance,employees,subcontractors}) {
   const [editing,setEditing]=useState(null);
-  const save=(f)=>{
-    if(!f.id){
-      const taken=new Set([...sites.map(x=>x.id),...idsInAttendance(attendance).sites]);
-      setSites(s=>[...s,{...f,id:freshId("s",taken)}]);
-    } else setSites(s=>s.map(x=>x.id===f.id?f:x));
-    setEditing(null);
-  };
+  const save=(f)=>{if(!f.id)setSites(s=>[...s,{...f,id:uid("s")}]);else setSites(s=>s.map(x=>x.id===f.id?f:x));setEditing(null);};
   const del=(id)=>{if(window.confirm("この現場を削除しますか？")){setSites(s=>s.filter(x=>x.id!==id));setEditing(null);}};
   if(editing!==null)return <SiteForm site={editing} onSave={save} onDelete={del} onClose={()=>setEditing(null)} attendance={attendance} employees={employees} subcontractors={subcontractors}/>;
   return (
@@ -753,7 +756,7 @@ function AttendanceTab({sites,employees,subcontractors,attendance,setAttendance}
       const day=prev[selDate]||{employees:[],subcontractors:[]};
       let emps=[...(day.employees||[])];
       const idx=emps.findIndex(r=>r.empId===empId);
-      const siteName=siteId===PAID_LEAVE_ID?PAID_LEAVE_NAME:(siteId?(sites.find(s=>s.id===siteId)?.name||""):"");
+      const siteName=siteId?(sites.find(s=>s.id===siteId)?.name||""):"";
       if(!siteId)emps=emps.filter(r=>r.empId!==empId);
       else if(idx>=0)emps[idx]={empId,siteId,siteName,hours};
       else emps.push({empId,siteId,siteName,hours});
@@ -765,7 +768,7 @@ function AttendanceTab({sites,employees,subcontractors,attendance,setAttendance}
       const day=prev[selDate]||{employees:[],subcontractors:[]};
       let scs=[...(day.subcontractors||[])];
       const idx=scs.findIndex(r=>r.scId===scId);
-      const siteName=siteId===PAID_LEAVE_ID?PAID_LEAVE_NAME:(siteId?(sites.find(s=>s.id===siteId)?.name||""):"");
+      const siteName=siteId?(sites.find(s=>s.id===siteId)?.name||""):"";
       if(!siteId||count<=0)scs=scs.filter(r=>r.scId!==scId);
       else if(idx>=0)scs[idx]={scId,siteId,siteName,count};
       else scs.push({scId,siteId,siteName,count});
@@ -794,33 +797,23 @@ function AttendanceTab({sites,employees,subcontractors,attendance,setAttendance}
       </div>
       {employees.map((emp,i)=>{
         const rec=empRecs.find(r=>r.empId===emp.id)||{siteId:"",hours:1};
-        const isPaid=rec.siteId===PAID_LEAVE_ID;
-        const isOut=!!rec.siteId&&!isPaid;
-        const filled=!!rec.siteId;
+        const isOut=!!rec.siteId;
         return (
-          <div key={emp.id} className="card-anim" style={{...s.card,borderColor:isPaid?C.gold:isOut?C.blue:C.border,animationDelay:`${i*0.05}s`}}>
-            <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:filled?14:0}}>
+          <div key={emp.id} className="card-anim" style={{...s.card,borderColor:isOut?C.blue:C.border,animationDelay:`${i*0.05}s`}}>
+            <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:isOut?14:0}}>
               <div style={{width:42,height:42,borderRadius:12,background:`linear-gradient(135deg,${C.blue}30,${C.blue}10)`,border:`1px solid ${C.blue}50`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,fontWeight:800,color:C.blue,flexShrink:0,fontFamily:"'JetBrains Mono',monospace"}}>{emp.name[0]}</div>
               <div style={{flex:1}}>
                 <div style={{fontSize:15,fontWeight:700,color:C.text}}>{emp.name}</div>
                 <div style={{fontSize:11,color:C.textSub}}>{emp.role} · {YEN(emp.dailyWage)}/日{isSun?` (+¥${SUNDAY_BONUS})`:""}</div>
               </div>
               {isOut&&<Tag color={C.green}>出勤済</Tag>}
-              {isPaid&&<Tag color={C.gold}>有給</Tag>}
             </div>
-            {filled&&<Divider/>}
-            <FSelect label="" value={rec.siteId} onChange={v=>setEmpRec(emp.id,v,v===PAID_LEAVE_ID?1:(rec.hours||1))}>
+            {isOut&&<Divider/>}
+            <FSelect label="" value={rec.siteId} onChange={v=>setEmpRec(emp.id,v,rec.hours||1)}>
               <option value="">— 休み / 未入力 —</option>
-              <option value={PAID_LEAVE_ID}>🏖 有給（全日）</option>
               {sites.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
             </FSelect>
-            {isPaid&&(
-              <div style={{background:C.bgDeep,borderRadius:10,padding:"12px 14px",border:`1px solid ${C.gold}40`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                <span style={{fontSize:12,color:C.textSub}}>有給（全日・日給満額）</span>
-                <span style={{fontSize:16,fontWeight:800,color:C.gold,fontFamily:"'JetBrains Mono',monospace"}}>{YEN(emp.dailyWage)}</span>
-              </div>
-            )}
-            {isOut&&(
+            {rec.siteId&&(
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:-4}}>
                 {[[1,"全日"],[0.5,"半日"]].map(([h,label])=>(
                   <button key={h} onClick={()=>setEmpRec(emp.id,rec.siteId,h)}
@@ -897,14 +890,10 @@ function PayrollTab({employees,subcontractors,sites,attendance}) {
   const days=getMonthDays(selMonth);
 
   const empSummaries=useMemo(()=>employees.map(emp=>{
-    let totalDays=0,baseWage=0,sundayBonus=0,paidDays=0,paidWage=0;const detail=[];
+    let totalDays=0,baseWage=0,sundayBonus=0;const detail=[];
     days.forEach(d=>{
       const rec=((attendance[d]||{}).employees||[]).find(r=>r.empId===emp.id);
-      if(rec&&rec.siteId===PAID_LEAVE_ID){
-        const wage=emp.dailyWage*(rec.hours||1);
-        paidDays+=(rec.hours||1);paidWage+=wage;
-        detail.push({date:d,dow:getDow(d),site:PAID_LEAVE_NAME,hours:rec.hours||1,wage,isSun:false,bonus:0,paid:true});
-      } else if(rec&&rec.siteId){
+      if(rec&&rec.siteId){
         const site=sites.find(s=>s.id===rec.siteId);
         const siteName=site?.name || rec.siteName || "(削除された現場)";
         const isSun=new Date(d).getDay()===0;
@@ -913,7 +902,7 @@ function PayrollTab({employees,subcontractors,sites,attendance}) {
         detail.push({date:d,dow:getDow(d),site:siteName,hours:rec.hours,wage,isSun,bonus,deleted:!site});
       }
     });
-    return {emp,totalDays,baseWage,sundayBonus,paidDays,paidWage,totalWage:baseWage+sundayBonus+paidWage,detail};
+    return {emp,totalDays,baseWage,sundayBonus,totalWage:baseWage+sundayBonus,detail};
   }),[employees,sites,attendance,selMonth]);
 
   const scSummaries=useMemo(()=>subcontractors.map(sc=>{
@@ -967,7 +956,7 @@ function PayrollTab({employees,subcontractors,sites,attendance}) {
       <div style={{fontSize:10,color:C.gold,fontWeight:700,letterSpacing:2,marginBottom:12,display:"flex",alignItems:"center",gap:8}}>
         <GlowDot color={C.green}/> 従業員 給与サマリー
       </div>
-      {empSummaries.map(({emp,totalDays,sundayBonus,paidDays,paidWage,totalWage,detail},i)=>(
+      {empSummaries.map(({emp,totalDays,sundayBonus,totalWage,detail},i)=>(
         <div key={emp.id} onClick={()=>setViewing(emp.id)} className="card-anim"
           style={{...s.card,cursor:"pointer",animationDelay:`${i*0.05}s`,transition:"border-color 0.2s"}}
           onMouseEnter={e=>e.currentTarget.style.borderColor=C.green}
@@ -989,8 +978,7 @@ function PayrollTab({employees,subcontractors,sites,attendance}) {
             <StatBox label="明細" value={`${detail.length}件`} sub/>
           </div>
           {sundayBonus>0&&<div style={{marginTop:10,background:C.redDk,borderRadius:8,padding:"6px 12px",fontSize:11,color:C.red,display:"flex",alignItems:"center",gap:6}}><GlowDot color={C.red}/>日曜出勤 {detail.filter(d=>d.isSun).length}日 · +{YEN(sundayBonus)}</div>}
-          {paidDays>0&&<div style={{marginTop:10,background:C.bgDeep,borderRadius:8,padding:"6px 12px",fontSize:11,color:C.gold,display:"flex",alignItems:"center",gap:6,border:`1px solid ${C.gold}30`}}><GlowDot color={C.gold}/>有給 {paidDays}日 · +{YEN(paidWage)}</div>}
-          {totalDays===0&&paidDays===0&&<div style={{marginTop:8,fontSize:11,color:C.textDim,textAlign:"center"}}>この月の出勤記録なし</div>}
+          {totalDays===0&&<div style={{marginTop:8,fontSize:11,color:C.textDim,textAlign:"center"}}>この月の出勤記録なし</div>}
           <div style={{textAlign:"right",marginTop:8,fontSize:10,color:C.textDim}}>明細を見る →</div>
         </div>
       ))}
@@ -1030,7 +1018,7 @@ function PayrollTab({employees,subcontractors,sites,attendance}) {
 
 // ── 給与明細書 ────────────────────────────────────────────────────────────────
 function PayslipView({summary,month,onClose}) {
-  const {emp,totalDays,baseWage,sundayBonus,paidDays,paidWage,totalWage,detail}=summary;
+  const {emp,totalDays,baseWage,sundayBonus,totalWage,detail}=summary;
   const [siteAllowance,setSiteAllowance]=useState("");
   const [saving,setSaving]=useState(false);
   const grandTotal=totalWage+(+siteAllowance||0);
@@ -1039,7 +1027,7 @@ function PayslipView({summary,month,onClose}) {
   return (
     <div style={{minHeight:"100vh",background:C.bg,fontFamily:"'Noto Sans JP',sans-serif"}}>
       <BackHeader title="給与明細書" onClose={onClose}
-        right={<PdfButton onClick={async()=>{setSaving(true);try{await downloadPayslipPDF(emp,month,baseWage,sundayBonus,sundayDays,siteAllowance,grandTotal,detail,paidDays,paidWage);}catch(e){alert(e.message);}setSaving(false);}} saving={saving}/>}/>
+        right={<PdfButton onClick={async()=>{setSaving(true);try{await downloadPayslipPDF(emp,month,baseWage,sundayBonus,sundayDays,siteAllowance,grandTotal,detail);}catch(e){alert(e.message);}setSaving(false);}} saving={saving}/>}/>
       <div style={{padding:"16px 16px 100px"}}>
         {/* Hero */}
         <div style={{background:`linear-gradient(135deg,${C.bgCard},${C.bgDeep})`,border:`1px solid ${C.gold}40`,borderRadius:20,padding:"22px 20px",marginBottom:16,position:"relative",overflow:"hidden"}}>
@@ -1060,11 +1048,6 @@ function PayslipView({summary,month,onClose}) {
           <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:`1px solid ${C.border}`}}>
             <span style={{fontSize:13,color:C.textSub}}>出勤日数</span><span style={{fontSize:13,color:C.text,fontWeight:700}}>{totalDays}日</span>
           </div>
-          {paidDays>0&&(
-            <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:`1px solid ${C.border}`}}>
-              <span style={{fontSize:13,color:C.textSub}}>有給取得日数</span><span style={{fontSize:13,color:C.gold,fontWeight:700}}>{paidDays}日</span>
-            </div>
-          )}
           <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:`1px solid ${C.border}`}}>
             <span style={{fontSize:13,color:C.textSub}}>日給単価</span><span style={{fontSize:13,color:C.text,fontWeight:700}}>{YEN(emp.dailyWage)}</span>
           </div>
@@ -1073,15 +1056,6 @@ function PayslipView({summary,month,onClose}) {
             <span style={{fontSize:14,fontWeight:700,color:C.text}}>基本給</span>
             <span style={{fontSize:15,fontWeight:800,color:C.text,fontFamily:"'JetBrains Mono',monospace"}}>{YEN(baseWage)}</span>
           </div>
-          {paidDays>0&&(
-            <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",alignItems:"center"}}>
-              <div style={{display:"flex",alignItems:"center",gap:8}}>
-                <GlowDot color={C.gold}/>
-                <span style={{fontSize:12,color:C.textSub}}>有給休暇（{paidDays}日×{YEN(emp.dailyWage)}）</span>
-              </div>
-              <span style={{fontSize:13,fontWeight:700,color:C.gold}}>+{YEN(paidWage)}</span>
-            </div>
-          )}
           {sundayBonus>0&&(
             <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",alignItems:"center"}}>
               <div style={{display:"flex",alignItems:"center",gap:8}}>
@@ -1199,24 +1173,12 @@ function ScInvoiceView({summary,month,onClose}) {
 // ══════════════════════════════════════════════════════════════════════════════
 // STAFF TAB
 // ══════════════════════════════════════════════════════════════════════════════
-function EmployeesTab({employees,setEmployees,subcontractors,setSubcontractors,attendance}) {
+function EmployeesTab({employees,setEmployees,subcontractors,setSubcontractors}) {
   const [editing,setEditing]=useState(null);
   const [editingSc,setEditingSc]=useState(null);
-  const saveEmp=(f)=>{
-    if(!f.id){
-      const taken=new Set([...employees.map(x=>x.id),...idsInAttendance(attendance).emps]);
-      setEmployees(e=>[...e,{...f,id:freshId("e",taken)}]);
-    } else setEmployees(e=>e.map(x=>x.id===f.id?f:x));
-    setEditing(null);
-  };
+  const saveEmp=(f)=>{if(!f.id)setEmployees(e=>[...e,{...f,id:uid("e")}]);else setEmployees(e=>e.map(x=>x.id===f.id?f:x));setEditing(null);};
   const delEmp=(id)=>{if(window.confirm("削除しますか？")){setEmployees(e=>e.filter(x=>x.id!==id));setEditing(null);}};
-  const saveSc=(f)=>{
-    if(!f.id){
-      const taken=new Set([...subcontractors.map(x=>x.id),...idsInAttendance(attendance).scs]);
-      setSubcontractors(s=>[...s,{...f,id:freshId("sc",taken)}]);
-    } else setSubcontractors(s=>s.map(x=>x.id===f.id?f:x));
-    setEditingSc(null);
-  };
+  const saveSc=(f)=>{if(!f.id)setSubcontractors(s=>[...s,{...f,id:uid("sc")}]);else setSubcontractors(s=>s.map(x=>x.id===f.id?f:x));setEditingSc(null);};
   const delSc=(id)=>{if(window.confirm("削除しますか？")){setSubcontractors(s=>s.filter(x=>x.id!==id));setEditingSc(null);}};
   if(editing)return <EmpForm emp={editing} onSave={saveEmp} onDelete={delEmp} onClose={()=>setEditing(null)}/>;
   if(editingSc)return <ScForm sc={editingSc} onSave={saveSc} onDelete={delSc} onClose={()=>setEditingSc(null)}/>;
@@ -1334,9 +1296,98 @@ function ScForm({sc,onSave,onDelete,onClose}) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// LOGIN SCREEN
+// ══════════════════════════════════════════════════════════════════════════════
+function LoginScreen({ onLogin }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setError(""); setLoading(true);
+    try {
+      const result = await signInWithEmailAndPassword(auth, email, password);
+      onLogin(result.user);
+    } catch(err) {
+      let msg = "ログインに失敗しました";
+      if (err.code === "auth/invalid-credential") msg = "メールアドレスまたはパスワードが違います";
+      else if (err.code === "auth/invalid-email") msg = "メールアドレスの形式が正しくありません";
+      else if (err.code === "auth/network-request-failed") msg = "ネットワークエラー。接続を確認してください";
+      setError(msg);
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div style={{minHeight:"100vh",background:C.bg,color:C.text,fontFamily:"'Noto Sans JP',sans-serif",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      <div style={{width:"100%",maxWidth:380}}>
+        <div style={{textAlign:"center",marginBottom:32}}>
+          <div style={{width:72,height:72,borderRadius:18,background:`linear-gradient(135deg,${C.gold},#b8882a)`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:36,margin:"0 auto 16px"}}>🏗</div>
+          <div style={{fontSize:10,color:C.textSub,letterSpacing:3,textTransform:"uppercase",marginBottom:4}}>大工・請負業</div>
+          <div style={{fontSize:22,fontWeight:800,color:C.text,fontFamily:"'JetBrains Mono',monospace",letterSpacing:-0.5}}>現場 & 給与 管理</div>
+        </div>
+
+        <form onSubmit={handleLogin} style={{background:C.bgCard,border:`1px solid ${C.border}`,borderRadius:16,padding:"24px 20px"}}>
+          <div style={{fontSize:11,color:C.gold,fontWeight:700,letterSpacing:2,marginBottom:16}}>🔐 ログイン</div>
+
+          <div style={{marginBottom:12}}>
+            <label style={{fontSize:10,color:C.textSub,letterSpacing:1,textTransform:"uppercase",fontWeight:700,marginBottom:6,display:"block"}}>メールアドレス</label>
+            <input type="email" value={email} onChange={e=>setEmail(e.target.value)} required autoComplete="email"
+              style={{width:"100%",background:C.bgDeep,border:`1px solid ${C.border}`,borderRadius:10,padding:"12px 14px",fontSize:15,color:C.text,outline:"none",boxSizing:"border-box",fontFamily:"inherit"}}/>
+          </div>
+
+          <div style={{marginBottom:16}}>
+            <label style={{fontSize:10,color:C.textSub,letterSpacing:1,textTransform:"uppercase",fontWeight:700,marginBottom:6,display:"block"}}>パスワード</label>
+            <input type="password" value={password} onChange={e=>setPassword(e.target.value)} required autoComplete="current-password"
+              style={{width:"100%",background:C.bgDeep,border:`1px solid ${C.border}`,borderRadius:10,padding:"12px 14px",fontSize:15,color:C.text,outline:"none",boxSizing:"border-box",fontFamily:"inherit"}}/>
+          </div>
+
+          {error && (
+            <div style={{background:C.redDk,border:`1px solid ${C.red}`,borderRadius:8,padding:"8px 12px",fontSize:12,color:C.red,marginBottom:14}}>⚠️ {error}</div>
+          )}
+
+          <button type="submit" disabled={loading}
+            style={{width:"100%",background:loading?"#1a2030":`linear-gradient(135deg,${C.gold},#b8882a)`,border:"none",borderRadius:12,padding:"14px",fontSize:15,fontWeight:700,color:loading?C.textSub:C.bgDeep,cursor:loading?"default":"pointer",letterSpacing:0.5,fontFamily:"inherit",opacity:loading?0.7:1}}>
+            {loading?"⏳ ログイン中...":"ログイン"}
+          </button>
+
+          <div style={{marginTop:16,fontSize:11,color:C.textSub,textAlign:"center",lineHeight:1.6}}>
+            Firebase認証でクラウド同期<br/>
+            複数端末で同じデータが使えます
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ── Sync status badge ─────────────────────────────────────────────────────────
+function SyncBadge({ status }) {
+  const config = {
+    idle:    { color: C.textSub, label: "オフライン", icon: "○" },
+    syncing: { color: C.gold,    label: "同期中",     icon: "⟳" },
+    synced:  { color: C.green,   label: "同期済み",   icon: "●" },
+    error:   { color: C.red,     label: "エラー",     icon: "!" },
+  }[status] || {color:C.textSub,label:"",icon:"○"};
+  return (
+    <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:5,background:C.bgDeep,border:`1px solid ${C.border}`,borderRadius:8,padding:"4px 9px"}}>
+      <span style={{color:config.color,fontSize:11,lineHeight:1,animation:status==="syncing"?"pulse 1s infinite":"none"}}>{config.icon}</span>
+      <span style={{fontSize:9,color:config.color,fontWeight:700,letterSpacing:0.5}}>{config.label}</span>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // ROOT
 // ══════════════════════════════════════════════════════════════════════════════
 export default function App() {
+  // ── Auth state ──
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [syncStatus, setSyncStatus] = useState("idle"); // "idle" | "syncing" | "synced" | "error"
+
   const [tab,setTab]=useState("attendance");
   const saved = loadState();
   const [sites,setSites]=useState(saved?.sites || initSites);
@@ -1347,36 +1398,64 @@ export default function App() {
   const [showBackups,setShowBackups]=useState(false);
   const [toast,setToast]=useState("");
   const [backupList,setBackupList]=useState([]);
+  const [initialSyncDone, setInitialSyncDone] = useState(false);
 
-  // Auto-save on any change + daily rolling backup
+  // Monitor auth state
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setAuthLoading(false);
+    });
+    return unsub;
+  }, []);
+
+  // On login: initial pull + subscribe to realtime updates
+  useEffect(() => {
+    if (!user) { setInitialSyncDone(false); return; }
+    let cancelled = false;
+    (async () => {
+      setSyncStatus("syncing");
+      const cloudData = await loadFromCloud(user.uid);
+      if (cancelled) return;
+      if (cloudData) {
+        // Cloud data exists → use it (overrides local)
+        if (cloudData.sites) setSites(cloudData.sites);
+        if (cloudData.employees) setEmployees(cloudData.employees);
+        if (cloudData.subcontractors) setSubcontractors(cloudData.subcontractors);
+        if (cloudData.attendance) setAttendance(cloudData.attendance);
+      } else {
+        // No cloud data yet → push current local data
+        await saveToCloud(user.uid, {sites,employees,subcontractors,attendance});
+      }
+      setSyncStatus("synced");
+      setInitialSyncDone(true);
+    })();
+    // Subscribe to realtime updates from other devices
+    const unsub = subscribeCloud(user.uid, (cloudData) => {
+      if (!cloudData || cancelled) return;
+      // Only apply if the update came from another device (i.e. the data differs)
+      const localTS = (loadState() || {}).updatedAt || 0;
+      if ((cloudData.updatedAt || 0) > localTS + 500) {
+        if (cloudData.sites) setSites(cloudData.sites);
+        if (cloudData.employees) setEmployees(cloudData.employees);
+        if (cloudData.subcontractors) setSubcontractors(cloudData.subcontractors);
+        if (cloudData.attendance) setAttendance(cloudData.attendance);
+      }
+    });
+    return () => { cancelled = true; unsub(); };
+  }, [user]);
+
+  // Auto-save on any change + daily rolling backup + cloud sync
   useEffect(()=>{
-    const state = {sites,employees,subcontractors,attendance};
+    const state = {sites,employees,subcontractors,attendance,updatedAt:Date.now()};
     saveState(state);
-    autoBackup(state); // daily snapshot, keeps last 7 days
+    autoBackup(state);
+    if (user && initialSyncDone) {
+      setSyncStatus("syncing");
+      debouncedSaveToCloud(user.uid, state);
+      setTimeout(()=>setSyncStatus("synced"), 1500);
+    }
   },[sites,employees,subcontractors,attendance]);
-
-  // One-time integrity check on startup: repair duplicate IDs left behind by an
-  // older version of the app (the first entry keeps its history, later duplicates
-  // get a brand-new id so they start empty instead of showing someone else's data).
-  useEffect(()=>{
-    const used=idsInAttendance(attendance);
-    const fix=(list,setter,prefix,reserved)=>{
-      const seen=new Set(); let changed=false;
-      const next=(list||[]).map(item=>{
-        if(item.id && !seen.has(item.id)){ seen.add(item.id); return item; }
-        changed=true;
-        const id=freshId(prefix,new Set([...seen,...reserved]));
-        seen.add(id);
-        return {...item,id};
-      });
-      if(changed) setter(next);
-      return changed;
-    };
-    const a=fix(sites,setSites,"s",used.sites);
-    const b=fix(employees,setEmployees,"e",used.emps);
-    const c=fix(subcontractors,setSubcontractors,"sc",used.scs);
-    if(a||b||c) setTimeout(()=>showToast("⚠️ 重複していたIDを修正しました"),400);
-  },[]);
 
   // Auto-backfill siteName snapshots into attendance records whenever sites list is up-to-date.
   // This ensures the site name is preserved even if the site is later deleted.
@@ -1385,10 +1464,6 @@ export default function App() {
     const next = {};
     Object.entries(attendance).forEach(([date, day])=>{
       const emps = (day.employees||[]).map(r=>{
-        if (r.siteId === PAID_LEAVE_ID) {
-          if (r.siteName !== PAID_LEAVE_NAME) { changed = true; return {...r, siteName: PAID_LEAVE_NAME}; }
-          return r;
-        }
         const site = sites.find(s=>s.id===r.siteId);
         if (site && r.siteName !== site.name) { changed = true; return {...r, siteName: site.name}; }
         if (!site && !r.siteName) { changed = true; return {...r, siteName: "(不明な現場)"}; }
@@ -1448,6 +1523,32 @@ export default function App() {
 
   const tabs=[["attendance","🗓","出勤"],["payroll","💴","給与"],["sites","🏗","現場"],["employees","👷","スタッフ"]];
 
+  const handleLogout = async () => {
+    if (!window.confirm("ログアウトしますか？")) return;
+    try { await signOut(auth); setShowMenu(false); showToast("👋 ログアウトしました"); }
+    catch(e) { alert("ログアウト失敗: " + e.message); }
+  };
+
+  // ── Not logged in → show login screen ──
+  if (authLoading) {
+    return (
+      <>
+        <style>{css}</style>
+        <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center",color:C.textSub,fontSize:14,fontFamily:"'Noto Sans JP',sans-serif"}}>
+          <div>読み込み中...</div>
+        </div>
+      </>
+    );
+  }
+  if (!user) {
+    return (
+      <>
+        <style>{css}</style>
+        <LoginScreen onLogin={(u) => setUser(u)} />
+      </>
+    );
+  }
+
   return (
     <>
       <style>{css}</style>
@@ -1460,7 +1561,8 @@ export default function App() {
               <div style={{fontSize:9,color:C.textSub,letterSpacing:3,textTransform:"uppercase",lineHeight:1}}>大工・請負業</div>
               <div style={{fontSize:17,fontWeight:800,color:C.text,fontFamily:"'JetBrains Mono',monospace",letterSpacing:-0.5,lineHeight:1.2}}>現場 & 給与 管理</div>
             </div>
-            <button onClick={()=>setShowMenu(true)} style={{marginLeft:"auto",background:C.bgDeep,border:`1px solid ${C.border}`,borderRadius:10,padding:"8px 10px",color:C.gold,fontSize:18,cursor:"pointer",lineHeight:1}}>⚙</button>
+            <SyncBadge status={syncStatus} />
+            <button onClick={()=>setShowMenu(true)} style={{marginLeft:8,background:C.bgDeep,border:`1px solid ${C.border}`,borderRadius:10,padding:"8px 10px",color:C.gold,fontSize:18,cursor:"pointer",lineHeight:1}}>⚙</button>
           </div>
         </div>
 
@@ -1469,7 +1571,7 @@ export default function App() {
           {tab==="attendance"&&<AttendanceTab sites={sites} employees={employees} subcontractors={subcontractors} attendance={attendance} setAttendance={setAttendance}/>}
           {tab==="payroll"&&<PayrollTab employees={employees} subcontractors={subcontractors} sites={sites} attendance={attendance}/>}
           {tab==="sites"&&<SitesTab sites={sites} setSites={setSites} attendance={attendance} employees={employees} subcontractors={subcontractors}/>}
-          {tab==="employees"&&<EmployeesTab employees={employees} setEmployees={setEmployees} subcontractors={subcontractors} setSubcontractors={setSubcontractors} attendance={attendance}/>}
+          {tab==="employees"&&<EmployeesTab employees={employees} setEmployees={setEmployees} subcontractors={subcontractors} setSubcontractors={setSubcontractors}/>}
         </div>
 
         {/* Bottom nav */}
@@ -1497,6 +1599,11 @@ export default function App() {
               </label>
 
               <button onClick={openBackups} style={{width:"100%",background:"transparent",border:`1.5px solid ${C.gold}`,borderRadius:11,padding:"12px",fontSize:14,fontWeight:700,color:C.gold,cursor:"pointer",marginBottom:10,fontFamily:"inherit"}}>🕒 自動バックアップから復元</button>
+
+              <div style={{background:C.bgDeep,borderRadius:10,padding:"10px 14px",marginBottom:10,border:`1px solid ${C.border}`,fontSize:11,color:C.textSub}}>
+                👤 ログイン中: <span style={{color:C.text,fontWeight:700}}>{user?.email}</span>
+              </div>
+              <button onClick={handleLogout} style={{width:"100%",background:"transparent",border:`1px solid ${C.textSub}`,borderRadius:11,padding:"11px",fontSize:13,fontWeight:600,color:C.textSub,cursor:"pointer",marginBottom:10,fontFamily:"inherit"}}>🚪 ログアウト</button>
 
               <button onClick={handleReset} style={{width:"100%",background:"transparent",border:`1px solid ${C.red}`,borderRadius:11,padding:"11px",fontSize:13,fontWeight:600,color:C.red,cursor:"pointer",marginBottom:14,fontFamily:"inherit"}}>🗑 全データを初期化</button>
 
