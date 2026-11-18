@@ -372,19 +372,45 @@ function calcMonthlyCashflow({ monthsAhead, sites, employees, subcontractors, at
     const incomeTotal = income.reduce((a,x)=>a+x.amount, 0);
     const expenseTotal = expense.reduce((a,x)=>a+x.amount, 0);
 
+    // ── 最大ケース計算（従業員が日曜以外休まず全日出勤したと仮定） ──
+    // 月の「非日曜」日数を数える
+    const nonSundayDays = daysInMonth.filter(d => new Date(d).getDay() !== 0).length;
+    // 全従業員の日給合計
+    const totalDailyWage = employees.reduce((a,e) => a + (+e.dailyWage||0), 0);
+    // 最大給与支出（日曜以外・全員・全日働いた場合）
+    const maxSalaryExpense = nonSundayDays * totalDailyWage;
+    // 実際の給与支出（既入力の出勤から集計済み）
+    const actualSalaryExpense = expense
+      .filter(e => e.type === "給与")
+      .reduce((a,x) => a + x.amount, 0);
+    // 外注と固定費は既存の値をそのまま使う
+    const subconAndFixed = expenseTotal - actualSalaryExpense;
+    const maxExpenseTotal = maxSalaryExpense + subconAndFixed;
+
     results.push({
       month: ym,
       income, expense, incomeTotal, expenseTotal,
       net: incomeTotal - expenseTotal,
+      // 最大ケース（上限予測）
+      maxSalaryExpense, actualSalaryExpense, maxExpenseTotal,
+      maxNet: incomeTotal - maxExpenseTotal,
+      nonSundayDays, totalDailyWage,
     });
   }
 
-  // Cumulative balance
+  // Cumulative balance（通常予測）
   let balance = +cashflow.startingBalance || 0;
   results.forEach(r => {
     r.startBalance = balance;
     balance += r.net;
     r.endBalance = balance;
+  });
+  // Cumulative balance（最大ケース）
+  let maxBalance = +cashflow.startingBalance || 0;
+  results.forEach(r => {
+    r.maxStartBalance = maxBalance;
+    maxBalance += r.maxNet;
+    r.maxEndBalance = maxBalance;
   });
 
   return results;
@@ -1769,16 +1795,29 @@ function CashflowTab({ sites, employees, subcontractors, attendance, cashflow, s
           <div style={{position:"absolute",top:-40,right:-40,width:140,height:140,background:`radial-gradient(${current.endBalance>=0?C.gold:C.red}18,transparent 70%)`}}/>
           <div style={{fontSize:10,color:C.gold,letterSpacing:2,fontWeight:700,marginBottom:8}}>月末残高 予測</div>
           <div style={{fontSize:32,fontWeight:800,color:current.endBalance>=0?C.text:C.red,fontFamily:"'JetBrains Mono',monospace",letterSpacing:-1,lineHeight:1,marginBottom:4}}>{YEN(current.endBalance)}</div>
-          <div style={{fontSize:11,color:C.textSub}}>{current.month.replace("-","年")}月末時点</div>
+          <div style={{fontSize:11,color:C.textSub}}>{current.month.replace("-","年")}月末時点（通常予測）</div>
           <div style={{display:"inline-block",background:current.net>=0?C.greenDk:C.redDk,color:current.net>=0?C.green:C.red,fontSize:11,fontWeight:700,padding:"3px 10px",borderRadius:99,marginTop:10}}>
             {current.net>=0?"↑":"↓"} 当月差引 {current.net>=0?"+":""}{YEN(current.net)}
+          </div>
+          {/* 最大ケース */}
+          <div style={{marginTop:14,paddingTop:12,borderTop:`1px dashed ${C.border}`}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
+              <div style={{fontSize:10,color:C.orange,letterSpacing:1.5,fontWeight:700}}>⚠ 最大ケース残高</div>
+              <Tag color={C.orange}>日曜以外フル稼働</Tag>
+            </div>
+            <div style={{fontSize:18,fontWeight:800,color:current.maxEndBalance>=0?C.text:C.red,fontFamily:"'JetBrains Mono',monospace",letterSpacing:-0.5,lineHeight:1.2}}>
+              {YEN(current.maxEndBalance)}
+            </div>
+            <div style={{fontSize:10,color:C.textSub,marginTop:2}}>
+              最悪: 当月差引 {current.maxNet>=0?"+":""}{YEN(current.maxNet)}
+            </div>
           </div>
         </div>
       )}
 
       {/* In/Out summary */}
       {current && (
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:18}}>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
           <div style={{background:C.bgCard,border:`1px solid ${C.border}`,borderRadius:14,padding:"14px 16px"}}>
             <div style={{fontSize:10,color:C.green,fontWeight:700,letterSpacing:1.5,marginBottom:8,display:"flex",alignItems:"center",gap:6}}>▲ 収入見込</div>
             <div style={{fontSize:20,fontWeight:800,color:C.green,fontFamily:"'JetBrains Mono',monospace",letterSpacing:-0.5,marginBottom:4}}>{YEN(current.incomeTotal)}</div>
@@ -1792,14 +1831,54 @@ function CashflowTab({ sites, employees, subcontractors, attendance, cashflow, s
         </div>
       )}
 
+      {/* 最大ケース支出カード */}
+      {current && current.totalDailyWage > 0 && (
+        <div style={{background:`linear-gradient(135deg,#2a1a00,${C.bgDeep})`,border:`1px solid ${C.orange}60`,borderRadius:14,padding:"14px 16px",marginBottom:18}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+            <div style={{fontSize:10,color:C.orange,fontWeight:700,letterSpacing:1.5,display:"flex",alignItems:"center",gap:6}}>
+              ⚠ 支出見込（最大ケース）
+            </div>
+            <Tag color={C.orange}>フル稼働想定</Tag>
+          </div>
+          <div style={{fontSize:22,fontWeight:800,color:C.orange,fontFamily:"'JetBrains Mono',monospace",letterSpacing:-0.5,marginBottom:6}}>
+            {YEN(current.maxExpenseTotal)}
+          </div>
+          <div style={{fontSize:11,color:C.textSub,lineHeight:1.6}}>
+            従業員が日曜以外休まず全日出勤した場合の上限予測<br/>
+            <span style={{color:C.text}}>
+              稼働日: {current.nonSundayDays}日 × 全員日給 {YEN(current.totalDailyWage)}
+            </span>
+            <span style={{color:C.textDim}}> ＋ 外注・固定費</span>
+          </div>
+          {current.maxExpenseTotal > current.expenseTotal && (
+            <div style={{marginTop:8,background:C.bgDeep,borderRadius:8,padding:"6px 12px",fontSize:11,color:C.orange,border:`1px solid ${C.border}`,display:"flex",justifyContent:"space-between"}}>
+              <span>通常予測との差</span>
+              <span style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:700}}>+{YEN(current.maxExpenseTotal - current.expenseTotal)}</span>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Shortage warning (any month going negative) */}
       {hasBalance && forecast.some(f => f.endBalance < 0) && (
         <div style={{background:`linear-gradient(135deg,${C.redDk},#2d0a0a)`,border:`1px solid ${C.red}`,borderRadius:12,padding:"12px 14px",marginBottom:14,display:"flex",alignItems:"center",gap:10}}>
           <div style={{fontSize:22}}>⚠️</div>
           <div style={{flex:1}}>
-            <div style={{fontSize:13,color:C.red,fontWeight:800,marginBottom:3}}>資金ショートの恐れ</div>
+            <div style={{fontSize:13,color:C.red,fontWeight:800,marginBottom:3}}>資金ショートの恐れ（通常予測）</div>
             <div style={{fontSize:11,color:C.textSub}}>
               {forecast.find(f => f.endBalance < 0).month.replace("-","年")}月に残高がマイナスになる見込み
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Max-case shortage warning (only if normal case is OK but max case is not) */}
+      {hasBalance && !forecast.some(f => f.endBalance < 0) && forecast.some(f => f.maxEndBalance < 0) && (
+        <div style={{background:`linear-gradient(135deg,#2a1a00,${C.bgDeep})`,border:`1px dashed ${C.orange}`,borderRadius:12,padding:"12px 14px",marginBottom:14,display:"flex",alignItems:"center",gap:10}}>
+          <div style={{fontSize:22}}>⚠</div>
+          <div style={{flex:1}}>
+            <div style={{fontSize:12,color:C.orange,fontWeight:800,marginBottom:3}}>最大ケースではショートの可能性</div>
+            <div style={{fontSize:11,color:C.textSub}}>
+              従業員フル稼働時は {forecast.find(f => f.maxEndBalance < 0).month.replace("-","年")}月にマイナス到達
             </div>
           </div>
         </div>
@@ -1829,23 +1908,37 @@ function CashflowTab({ sites, employees, subcontractors, attendance, cashflow, s
             <span style={{fontSize:9,color:C.textSub,fontWeight:500}}>単位: 万円</span>
           </div>
           {(() => {
-            const maxAbs = Math.max(1, ...forecast.map(f => Math.abs(f.endBalance)));
+            const maxAbs = Math.max(1, ...forecast.map(f => Math.max(Math.abs(f.endBalance), Math.abs(f.maxEndBalance||0))));
             return (
-              <div style={{display:"flex",gap:8,alignItems:"flex-end",height:140,padding:"0 4px"}}>
-                {forecast.map(f => {
-                  const h = Math.max(4, Math.abs(f.endBalance) / maxAbs * 110);
-                  const neg = f.endBalance < 0;
-                  const warn = f.endBalance >= 0 && f.endBalance < 500000;
-                  const [bgA, bgB] = neg ? [C.red, "#c92a2a"] : warn ? [C.orange, "#c25a2a"] : [C.green, "#2c8a4f"];
-                  return (
-                    <div key={f.month} onClick={()=>setSelMonth(f.month)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4,cursor:"pointer"}}>
-                      <div style={{fontSize:9,color:f.month===selMonth?C.gold:C.text,fontWeight:700,fontFamily:"'JetBrains Mono',monospace"}}>{Math.round(f.endBalance/10000)}</div>
-                      <div style={{width:"100%",height:h,background:`linear-gradient(180deg,${bgA},${bgB})`,borderRadius:"4px 4px 0 0",opacity:f.month===selMonth?1:0.65,transition:"opacity 0.2s"}}/>
-                      <div style={{fontSize:9,color:f.month===selMonth?C.gold:C.textSub,fontFamily:"'JetBrains Mono',monospace",fontWeight:f.month===selMonth?700:500}}>{f.month.split("-")[1]}月</div>
-                    </div>
-                  );
-                })}
-              </div>
+              <>
+                <div style={{display:"flex",gap:8,alignItems:"flex-end",height:140,padding:"0 4px"}}>
+                  {forecast.map(f => {
+                    const h = Math.max(4, Math.abs(f.endBalance) / maxAbs * 110);
+                    const hMax = Math.max(4, Math.abs(f.maxEndBalance||0) / maxAbs * 110);
+                    const neg = f.endBalance < 0;
+                    const warn = f.endBalance >= 0 && f.endBalance < 500000;
+                    const [bgA, bgB] = neg ? [C.red, "#c92a2a"] : warn ? [C.orange, "#c25a2a"] : [C.green, "#2c8a4f"];
+                    return (
+                      <div key={f.month} onClick={()=>setSelMonth(f.month)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4,cursor:"pointer"}}>
+                        <div style={{fontSize:9,color:f.month===selMonth?C.gold:C.text,fontWeight:700,fontFamily:"'JetBrains Mono',monospace"}}>{Math.round(f.endBalance/10000)}</div>
+                        <div style={{width:"100%",height:120,position:"relative",display:"flex",alignItems:"flex-end"}}>
+                          {/* 通常予測（実バー） */}
+                          <div style={{width:"100%",height:h,background:`linear-gradient(180deg,${bgA},${bgB})`,borderRadius:"4px 4px 0 0",opacity:f.month===selMonth?1:0.7,transition:"opacity 0.2s",position:"relative",zIndex:2}}/>
+                          {/* 最大ケースの到達ラインマーカー */}
+                          {(f.maxEndBalance||0) !== f.endBalance && (
+                            <div style={{position:"absolute",left:0,right:0,bottom:hMax-1,height:2,background:C.orange,opacity:0.8,zIndex:3,pointerEvents:"none"}}/>
+                          )}
+                        </div>
+                        <div style={{fontSize:9,color:f.month===selMonth?C.gold:C.textSub,fontFamily:"'JetBrains Mono',monospace",fontWeight:f.month===selMonth?700:500}}>{f.month.split("-")[1]}月</div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{display:"flex",gap:12,justifyContent:"center",marginTop:10,fontSize:9,color:C.textSub}}>
+                  <div style={{display:"flex",alignItems:"center",gap:4}}><div style={{width:12,height:8,background:C.green,borderRadius:2}}/>通常予測</div>
+                  <div style={{display:"flex",alignItems:"center",gap:4}}><div style={{width:12,height:2,background:C.orange}}/>最大ケース(フル稼働)</div>
+                </div>
+              </>
             );
           })()}
         </div>
