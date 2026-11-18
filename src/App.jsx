@@ -157,6 +157,19 @@ const initAttendance = {
     subcontractors:[],
   },
 };
+// ── Cashflow (資金繰り) initial data ──
+const initCashflow = {
+  startingBalance: "",       // 現在の銀行残高（手入力・¥）
+  startingBalanceDate: todayDateStr(), // 残高登録日
+  defaultPaymentDay: 25,     // 現場入金のデフォルト日（月末=31、25日など）
+  defaultSalaryDay: 25,      // 給与支払いのデフォルト日
+  defaultSubconDay: 31,      // 外注費支払いのデフォルト日
+  fixedCosts: [              // 固定費リスト
+    // {id, name, amount, day, category}
+  ],
+  sitePaymentOverrides: {},  // siteId → {date: "YYYY-MM-DD"} カスタム入金日
+};
+
 // Unique ID generator - never collides even after page reload
 function uid(prefix) {
   return `${prefix}${Date.now().toString(36)}${Math.random().toString(36).slice(2,7)}`;
@@ -215,6 +228,149 @@ function getMonthDays(ym) {
   return Array.from({length:new Date(y,m,0).getDate()},(_,i)=>`${ym}-${String(i+1).padStart(2,"0")}`);
 }
 function getDow(d){return["日","月","火","水","木","金","土"][new Date(d).getDay()];}
+
+// ── 資金繰り計算ロジック ──
+function monthStr(y, m) {
+  // y=year, m=month (1-12). Normalize.
+  const d = new Date(y, m-1, 1);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+}
+function addMonths(ym, delta) {
+  const [y,m]=ym.split("-").map(Number);
+  const d = new Date(y, m-1 + delta, 1);
+  return monthStr(d.getFullYear(), d.getMonth()+1);
+}
+function clampDayToMonth(ym, day) {
+  const [y,m]=ym.split("-").map(Number);
+  const lastDay = new Date(y, m, 0).getDate();
+  const d = Math.min(Math.max(1, +day||1), lastDay);
+  return `${ym}-${String(d).padStart(2,"0")}`;
+}
+
+/**
+ * 月別の収支予測を計算。
+ * @returns {Array} [{month, income[], expense[], incomeTotal, expenseTotal, net}]
+ */
+function calcMonthlyCashflow({ monthsAhead, sites, employees, subcontractors, attendance, cashflow }) {
+  const now = new Date();
+  const startYM = monthStr(now.getFullYear(), now.getMonth()+1);
+  const results = [];
+
+  for (let i = 0; i < monthsAhead; i++) {
+    const ym = addMonths(startYM, i);
+    const income = [];
+    const expense = [];
+
+    // ── 収入: 現場の入金予定 ──
+    sites.forEach(site => {
+      if (!site.month) return;
+      // sitePaymentOverrides に設定があればその日付、なければ完了月の defaultPaymentDay
+      const override = (cashflow.sitePaymentOverrides||{})[site.id];
+      let payDate;
+      if (override && override.date) {
+        payDate = override.date;
+      } else {
+        payDate = clampDayToMonth(site.month, cashflow.defaultPaymentDay || 25);
+      }
+      if (payDate.slice(0,7) === ym) {
+        const amount = +site.contractTax || Math.round((+site.contract||0) * 1.1);
+        if (amount > 0) {
+          income.push({
+            id: `site-${site.id}`,
+            date: payDate,
+            name: site.name,
+            type: "現場入金（税込）",
+            amount,
+            auto: true,
+            editable: true,
+            refId: site.id,
+          });
+        }
+      }
+    });
+
+    // ── 支出: 給与（従業員ごと、月末ごとに集計） ──
+    const daysInMonth = getMonthDays(ym);
+    employees.forEach(emp => {
+      let total = 0;
+      daysInMonth.forEach(d => {
+        const rec = ((attendance[d]||{}).employees||[]).find(r => r.empId === emp.id);
+        if (rec && rec.siteId) {
+          const isSun = new Date(d).getDay() === 0;
+          total += emp.dailyWage * rec.hours + (isSun ? 1000 * rec.hours : 0);
+        }
+      });
+      if (total > 0) {
+        expense.push({
+          id: `salary-${emp.id}-${ym}`,
+          date: clampDayToMonth(ym, cashflow.defaultSalaryDay || 25),
+          name: emp.name,
+          type: "給与",
+          amount: total,
+          auto: true,
+        });
+      }
+    });
+
+    // ── 支出: 外注費（外注先ごと） ──
+    subcontractors.forEach(sc => {
+      let total = 0;
+      daysInMonth.forEach(d => {
+        const rec = ((attendance[d]||{}).subcontractors||[]).find(r => r.scId === sc.id);
+        if (rec && rec.siteId && rec.count > 0) {
+          total += sc.dailyRate * rec.count;
+        }
+      });
+      if (total > 0) {
+        expense.push({
+          id: `subcon-${sc.id}-${ym}`,
+          date: clampDayToMonth(ym, cashflow.defaultSubconDay || 31),
+          name: sc.company,
+          type: "外注費",
+          amount: total,
+          auto: true,
+        });
+      }
+    });
+
+    // ── 支出: 固定費 ──
+    (cashflow.fixedCosts||[]).forEach(fc => {
+      if (+fc.amount > 0) {
+        expense.push({
+          id: `fixed-${fc.id}-${ym}`,
+          date: clampDayToMonth(ym, fc.day || 27),
+          name: fc.name,
+          type: fc.category || "固定費",
+          amount: +fc.amount,
+          fixed: true,
+        });
+      }
+    });
+
+    // Sort by date
+    income.sort((a,b) => a.date.localeCompare(b.date));
+    expense.sort((a,b) => a.date.localeCompare(b.date));
+
+    const incomeTotal = income.reduce((a,x)=>a+x.amount, 0);
+    const expenseTotal = expense.reduce((a,x)=>a+x.amount, 0);
+
+    results.push({
+      month: ym,
+      income, expense, incomeTotal, expenseTotal,
+      net: incomeTotal - expenseTotal,
+    });
+  }
+
+  // Cumulative balance
+  let balance = +cashflow.startingBalance || 0;
+  results.forEach(r => {
+    r.startBalance = balance;
+    balance += r.net;
+    r.endBalance = balance;
+  });
+
+  return results;
+}
 
 // ── HTML-based PDF (browser print) — supports full Japanese ──────────────────
 function openPrintWindow(html, title) {
@@ -1364,6 +1520,324 @@ function ScForm({sc,onSave,onDelete,onClose}) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// CASHFLOW TAB
+// ══════════════════════════════════════════════════════════════════════════════
+function CashflowTab({ sites, employees, subcontractors, attendance, cashflow, setCashflow }) {
+  const [selMonth, setSelMonth] = useState(todayStr().slice(0,7));
+  const [showSettings, setShowSettings] = useState(false);
+  const [showFixed, setShowFixed] = useState(false);
+
+  // Compute 6 months of cashflow starting from current month
+  const forecast = useMemo(() => calcMonthlyCashflow({
+    monthsAhead: 6, sites, employees, subcontractors, attendance, cashflow
+  }), [sites, employees, subcontractors, attendance, cashflow]);
+
+  // Find selected month data (may not exist if user picks a month outside range)
+  const current = forecast.find(f => f.month === selMonth) || forecast[0];
+  const idx = forecast.findIndex(f => f.month === selMonth);
+  const canPrev = idx > 0;
+  const canNext = idx >= 0 && idx < forecast.length - 1;
+
+  const hasBalance = !!cashflow.startingBalance;
+
+  return (
+    <div style={{padding:"16px 16px 100px"}}>
+      {/* Month selector */}
+      <div style={{background:C.bgCard,border:`1px solid ${C.border}`,borderRadius:16,padding:"14px 18px",marginBottom:18,display:"flex",alignItems:"center",gap:14}}>
+        <div style={{fontSize:28}}>📆</div>
+        <div style={{flex:1}}>
+          <div style={{fontSize:10,color:C.gold,fontWeight:700,letterSpacing:1.5,marginBottom:4}}>対象月</div>
+          <input type="month" value={selMonth} onChange={e=>setSelMonth(e.target.value)}
+            style={{background:"transparent",border:"none",color:C.text,fontSize:17,fontWeight:800,outline:"none",fontFamily:"'JetBrains Mono',monospace"}}/>
+        </div>
+        <div style={{display:"flex",gap:6}}>
+          <button onClick={()=>canPrev&&setSelMonth(forecast[idx-1].month)} disabled={!canPrev}
+            style={{width:32,height:32,borderRadius:8,background:C.bgDeep,border:`1px solid ${C.border}`,color:canPrev?C.gold:C.textDim,fontSize:16,cursor:canPrev?"pointer":"default",fontFamily:"inherit"}}>‹</button>
+          <button onClick={()=>canNext&&setSelMonth(forecast[idx+1].month)} disabled={!canNext}
+            style={{width:32,height:32,borderRadius:8,background:C.bgDeep,border:`1px solid ${C.border}`,color:canNext?C.gold:C.textDim,fontSize:16,cursor:canNext?"pointer":"default",fontFamily:"inherit"}}>›</button>
+        </div>
+      </div>
+
+      {!hasBalance && (
+        <div onClick={()=>setShowSettings(true)} style={{background:`linear-gradient(135deg,${C.gold}20,${C.bgDeep})`,border:`1.5px dashed ${C.gold}`,borderRadius:14,padding:"14px 16px",marginBottom:14,cursor:"pointer",display:"flex",alignItems:"center",gap:12}}>
+          <div style={{fontSize:28}}>💡</div>
+          <div style={{flex:1}}>
+            <div style={{fontSize:13,color:C.gold,fontWeight:800,marginBottom:3}}>最初に銀行残高を登録</div>
+            <div style={{fontSize:11,color:C.textSub}}>残高を入れると、月末残高が自動計算されます</div>
+          </div>
+          <div style={{color:C.gold,fontSize:18}}>›</div>
+        </div>
+      )}
+
+      {/* Balance forecast card */}
+      {current && hasBalance && (
+        <div style={{background:`linear-gradient(135deg,${C.bgCard},${C.bgDeep})`,border:`1px solid ${current.endBalance>=0?C.gold+"4d":C.red}`,borderRadius:18,padding:"20px 22px",marginBottom:18,position:"relative",overflow:"hidden"}}>
+          <div style={{position:"absolute",top:-40,right:-40,width:140,height:140,background:`radial-gradient(${current.endBalance>=0?C.gold:C.red}18,transparent 70%)`}}/>
+          <div style={{fontSize:10,color:C.gold,letterSpacing:2,fontWeight:700,marginBottom:8}}>月末残高 予測</div>
+          <div style={{fontSize:32,fontWeight:800,color:current.endBalance>=0?C.text:C.red,fontFamily:"'JetBrains Mono',monospace",letterSpacing:-1,lineHeight:1,marginBottom:4}}>{YEN(current.endBalance)}</div>
+          <div style={{fontSize:11,color:C.textSub}}>{current.month.replace("-","年")}月末時点</div>
+          <div style={{display:"inline-block",background:current.net>=0?C.greenDk:C.redDk,color:current.net>=0?C.green:C.red,fontSize:11,fontWeight:700,padding:"3px 10px",borderRadius:99,marginTop:10}}>
+            {current.net>=0?"↑":"↓"} 当月差引 {current.net>=0?"+":""}{YEN(current.net)}
+          </div>
+        </div>
+      )}
+
+      {/* In/Out summary */}
+      {current && (
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:18}}>
+          <div style={{background:C.bgCard,border:`1px solid ${C.border}`,borderRadius:14,padding:"14px 16px"}}>
+            <div style={{fontSize:10,color:C.green,fontWeight:700,letterSpacing:1.5,marginBottom:8,display:"flex",alignItems:"center",gap:6}}>▲ 収入見込</div>
+            <div style={{fontSize:20,fontWeight:800,color:C.green,fontFamily:"'JetBrains Mono',monospace",letterSpacing:-0.5,marginBottom:4}}>{YEN(current.incomeTotal)}</div>
+            <div style={{fontSize:10,color:C.textSub}}>{current.income.length}件の入金予定</div>
+          </div>
+          <div style={{background:C.bgCard,border:`1px solid ${C.border}`,borderRadius:14,padding:"14px 16px"}}>
+            <div style={{fontSize:10,color:C.orange,fontWeight:700,letterSpacing:1.5,marginBottom:8,display:"flex",alignItems:"center",gap:6}}>▼ 支出見込</div>
+            <div style={{fontSize:20,fontWeight:800,color:C.orange,fontFamily:"'JetBrains Mono',monospace",letterSpacing:-0.5,marginBottom:4}}>{YEN(current.expenseTotal)}</div>
+            <div style={{fontSize:10,color:C.textSub}}>給与・経費・固定費</div>
+          </div>
+        </div>
+      )}
+
+      {/* Shortage warning (any month going negative) */}
+      {hasBalance && forecast.some(f => f.endBalance < 0) && (
+        <div style={{background:`linear-gradient(135deg,${C.redDk},#2d0a0a)`,border:`1px solid ${C.red}`,borderRadius:12,padding:"12px 14px",marginBottom:14,display:"flex",alignItems:"center",gap:10}}>
+          <div style={{fontSize:22}}>⚠️</div>
+          <div style={{flex:1}}>
+            <div style={{fontSize:13,color:C.red,fontWeight:800,marginBottom:3}}>資金ショートの恐れ</div>
+            <div style={{fontSize:11,color:C.textSub}}>
+              {forecast.find(f => f.endBalance < 0).month.replace("-","年")}月に残高がマイナスになる見込み
+            </div>
+          </div>
+        </div>
+      )}
+      {hasBalance && current && current.endBalance >= 0 && current.endBalance < 500000 && !forecast.some(f => f.endBalance < 0) && (
+        <div style={{background:`linear-gradient(135deg,#2a1a00,${C.bgDeep})`,border:`1px solid ${C.orange}`,borderRadius:12,padding:"12px 14px",marginBottom:14,display:"flex",alignItems:"center",gap:10}}>
+          <div style={{fontSize:22}}>⚠️</div>
+          <div style={{fontSize:12,color:C.orange,fontWeight:700,lineHeight:1.4}}>
+            月末残高が50万円を下回る見込み
+          </div>
+        </div>
+      )}
+      {hasBalance && current && current.endBalance >= 500000 && !forecast.some(f => f.endBalance < 0) && (
+        <div style={{background:`linear-gradient(135deg,${C.greenDk},#052e16)`,border:`1px solid ${C.green}`,borderRadius:12,padding:"12px 14px",marginBottom:14,display:"flex",alignItems:"center",gap:10}}>
+          <div style={{fontSize:22}}>✓</div>
+          <div style={{fontSize:12,color:C.green,fontWeight:700,lineHeight:1.4}}>
+            資金繰りは順調です
+          </div>
+        </div>
+      )}
+
+      {/* 6-month forecast chart */}
+      {hasBalance && (
+        <div style={{background:C.bgCard,border:`1px solid ${C.border}`,borderRadius:16,padding:"16px 18px",marginBottom:18}}>
+          <div style={{fontSize:10,color:C.gold,fontWeight:700,letterSpacing:1.5,marginBottom:14,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+            <span>📊 6ヶ月先までの残高推移</span>
+            <span style={{fontSize:9,color:C.textSub,fontWeight:500}}>単位: 万円</span>
+          </div>
+          {(() => {
+            const maxAbs = Math.max(1, ...forecast.map(f => Math.abs(f.endBalance)));
+            return (
+              <div style={{display:"flex",gap:8,alignItems:"flex-end",height:140,padding:"0 4px"}}>
+                {forecast.map(f => {
+                  const h = Math.max(4, Math.abs(f.endBalance) / maxAbs * 110);
+                  const neg = f.endBalance < 0;
+                  const warn = f.endBalance >= 0 && f.endBalance < 500000;
+                  const [bgA, bgB] = neg ? [C.red, "#c92a2a"] : warn ? [C.orange, "#c25a2a"] : [C.green, "#2c8a4f"];
+                  return (
+                    <div key={f.month} onClick={()=>setSelMonth(f.month)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4,cursor:"pointer"}}>
+                      <div style={{fontSize:9,color:f.month===selMonth?C.gold:C.text,fontWeight:700,fontFamily:"'JetBrains Mono',monospace"}}>{Math.round(f.endBalance/10000)}</div>
+                      <div style={{width:"100%",height:h,background:`linear-gradient(180deg,${bgA},${bgB})`,borderRadius:"4px 4px 0 0",opacity:f.month===selMonth?1:0.65,transition:"opacity 0.2s"}}/>
+                      <div style={{fontSize:9,color:f.month===selMonth?C.gold:C.textSub,fontFamily:"'JetBrains Mono',monospace",fontWeight:f.month===selMonth?700:500}}>{f.month.split("-")[1]}月</div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* Income list */}
+      {current && current.income.length > 0 && (
+        <>
+          <div style={{fontSize:10,color:C.gold,fontWeight:700,letterSpacing:2,marginBottom:12,display:"flex",alignItems:"center",gap:8}}>
+            <GlowDot color={C.green}/> 今月の入金予定
+          </div>
+          {current.income.map(it => <CashflowItem key={it.id} item={it} kind="in"/>)}
+        </>
+      )}
+
+      {/* Expense list */}
+      {current && current.expense.length > 0 && (
+        <>
+          <div style={{fontSize:10,color:C.gold,fontWeight:700,letterSpacing:2,margin:"18px 0 12px",display:"flex",alignItems:"center",gap:8}}>
+            <GlowDot color={C.orange}/> 今月の支出予定
+          </div>
+          {current.expense.map(it => <CashflowItem key={it.id} item={it} kind="out"/>)}
+        </>
+      )}
+
+      {/* Action buttons */}
+      <div style={{marginTop:24,display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+        <button onClick={()=>setShowSettings(true)}
+          style={{background:C.bgCard,border:`1px solid ${C.border}`,borderRadius:12,padding:"12px",fontSize:13,fontWeight:700,color:C.gold,cursor:"pointer",fontFamily:"inherit"}}>
+          💰 残高設定
+        </button>
+        <button onClick={()=>setShowFixed(true)}
+          style={{background:C.bgCard,border:`1px solid ${C.border}`,borderRadius:12,padding:"12px",fontSize:13,fontWeight:700,color:C.blue,cursor:"pointer",fontFamily:"inherit"}}>
+          📋 固定費 ({(cashflow.fixedCosts||[]).length})
+        </button>
+      </div>
+
+      {showSettings && <CashflowSettings cashflow={cashflow} setCashflow={setCashflow} onClose={()=>setShowSettings(false)}/>}
+      {showFixed && <FixedCostsEditor cashflow={cashflow} setCashflow={setCashflow} onClose={()=>setShowFixed(false)}/>}
+    </div>
+  );
+}
+
+function CashflowItem({ item, kind }) {
+  const color = kind === "in" ? C.green : C.orange;
+  return (
+    <div style={{background:C.bgCard,border:`1px solid ${C.border}`,borderRadius:14,padding:"12px 14px",marginBottom:8,display:"flex",alignItems:"center",gap:12}}>
+      <div style={{background:C.bgDeep,borderRadius:8,padding:"5px 8px",textAlign:"center",minWidth:46,border:`1px solid ${C.border}`}}>
+        <div style={{fontSize:10,color:C.textSub}}>{item.date.slice(5)}</div>
+        <div style={{fontSize:12,fontWeight:800,color:C.blue,fontFamily:"'JetBrains Mono',monospace"}}>{getDow(item.date)}</div>
+      </div>
+      <div style={{flex:1,minWidth:0}}>
+        <div style={{fontSize:13,fontWeight:700,color:C.text,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+          <span style={{overflow:"hidden",textOverflow:"ellipsis"}}>{item.name}</span>
+          {item.auto && <Tag color={C.gold}>自動</Tag>}
+          {item.fixed && <Tag color={C.blue}>固定</Tag>}
+        </div>
+        <div style={{fontSize:10,color:C.textSub,marginTop:2}}>{item.type}</div>
+      </div>
+      <div style={{fontSize:15,fontWeight:800,color,fontFamily:"'JetBrains Mono',monospace",whiteSpace:"nowrap"}}>{kind==="in"?"+":"-"}{YEN(item.amount)}</div>
+    </div>
+  );
+}
+
+function CashflowSettings({ cashflow, setCashflow, onClose }) {
+  const [f, setF] = useState({...cashflow});
+  const set = k => v => setF(p => ({...p, [k]: v}));
+
+  const save = () => {
+    setCashflow({...f});
+    onClose();
+  };
+
+  return (
+    <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",zIndex:100,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      <div onClick={e=>e.stopPropagation()} style={{background:C.bgCard,border:`1px solid ${C.gold}40`,borderRadius:18,padding:"22px 20px",width:"100%",maxWidth:400,maxHeight:"90vh",overflow:"auto"}}>
+        <div style={{fontSize:11,color:C.gold,fontWeight:700,letterSpacing:2,marginBottom:6}}>SETTINGS</div>
+        <div style={{fontSize:18,fontWeight:800,color:C.text,marginBottom:16,fontFamily:"'JetBrains Mono',monospace"}}>💰 残高・支払日</div>
+
+        <FInput label="現在の銀行残高（円）" value={f.startingBalance} onChange={set("startingBalance")} num hint="メインの口座残高を入力してください"/>
+        <FInput label="残高登録日" value={f.startingBalanceDate} onChange={set("startingBalanceDate")} type="date"/>
+        <div style={{height:8}}/>
+        <div style={{fontSize:10,color:C.textSub,letterSpacing:1,fontWeight:700,marginBottom:10,textTransform:"uppercase"}}>デフォルト支払日</div>
+        <FInput label="現場入金日（月の何日に入金されるか）" value={f.defaultPaymentDay} onChange={set("defaultPaymentDay")} num hint="例: 25 → 毎月25日に入金"/>
+        <FInput label="給与支払日" value={f.defaultSalaryDay} onChange={set("defaultSalaryDay")} num/>
+        <FInput label="外注費支払日" value={f.defaultSubconDay} onChange={set("defaultSubconDay")} num hint="31=月末"/>
+
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginTop:16}}>
+          <button onClick={onClose} style={{background:"transparent",border:`1px solid ${C.border}`,borderRadius:11,padding:"12px",fontSize:13,fontWeight:600,color:C.textSub,cursor:"pointer",fontFamily:"inherit"}}>キャンセル</button>
+          <button onClick={save} style={{background:`linear-gradient(135deg,${C.gold},#b8882a)`,border:"none",borderRadius:11,padding:"12px",fontSize:13,fontWeight:700,color:C.bgDeep,cursor:"pointer",fontFamily:"inherit"}}>保存</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FixedCostsEditor({ cashflow, setCashflow, onClose }) {
+  const [costs, setCosts] = useState([...(cashflow.fixedCosts||[])]);
+  const [editing, setEditing] = useState(null);
+
+  const save = () => {
+    setCashflow({...cashflow, fixedCosts: costs});
+    onClose();
+  };
+
+  const addNew = () => setEditing({id: uid("fc"), name: "", amount: "", day: 27, category: "固定費"});
+  const saveItem = (item) => {
+    const idx = costs.findIndex(c => c.id === item.id);
+    if (idx >= 0) {
+      const next = [...costs]; next[idx] = item; setCosts(next);
+    } else {
+      setCosts([...costs, item]);
+    }
+    setEditing(null);
+  };
+  const deleteItem = (id) => {
+    if (window.confirm("削除しますか？")) {
+      setCosts(costs.filter(c => c.id !== id));
+      setEditing(null);
+    }
+  };
+
+  if (editing) return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.75)",zIndex:110,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      <div style={{background:C.bgCard,border:`1px solid ${C.gold}40`,borderRadius:18,padding:"22px 20px",width:"100%",maxWidth:400}}>
+        <div style={{fontSize:11,color:C.gold,fontWeight:700,letterSpacing:2,marginBottom:6}}>FIXED COST</div>
+        <div style={{fontSize:18,fontWeight:800,color:C.text,marginBottom:16,fontFamily:"'JetBrains Mono',monospace"}}>固定費を編集</div>
+
+        <FInput label="名前（例: 事務所家賃）" value={editing.name} onChange={v=>setEditing({...editing,name:v})}/>
+        <FInput label="月額（円）" value={editing.amount} onChange={v=>setEditing({...editing,amount:v})} num/>
+        <FInput label="支払日（1〜31、31=月末）" value={editing.day} onChange={v=>setEditing({...editing,day:v})} num/>
+        <div style={{marginBottom:10}}>
+          <label style={{fontSize:10,color:C.textSub,letterSpacing:1,textTransform:"uppercase",fontWeight:700,marginBottom:6,display:"block"}}>カテゴリ</label>
+          <select value={editing.category} onChange={e=>setEditing({...editing,category:e.target.value})}
+            style={{width:"100%",background:C.bgDeep,border:`1px solid ${C.border}`,borderRadius:10,padding:"12px 14px",fontSize:14,color:C.text,outline:"none"}}>
+            {["固定費","家賃","光熱費","通信費","リース","保険","税金","その他"].map(c=><option key={c}>{c}</option>)}
+          </select>
+        </div>
+
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginTop:10}}>
+          <button onClick={()=>setEditing(null)} style={{background:"transparent",border:`1px solid ${C.border}`,borderRadius:11,padding:"12px",fontSize:13,fontWeight:600,color:C.textSub,cursor:"pointer",fontFamily:"inherit"}}>キャンセル</button>
+          <button onClick={()=>saveItem(editing)} style={{background:`linear-gradient(135deg,${C.gold},#b8882a)`,border:"none",borderRadius:11,padding:"12px",fontSize:13,fontWeight:700,color:C.bgDeep,cursor:"pointer",fontFamily:"inherit"}}>保存</button>
+        </div>
+        {costs.find(c => c.id === editing.id) && (
+          <button onClick={()=>deleteItem(editing.id)} style={{width:"100%",marginTop:10,background:"transparent",border:`1px solid ${C.red}`,borderRadius:11,padding:"11px",fontSize:12,fontWeight:600,color:C.red,cursor:"pointer",fontFamily:"inherit"}}>🗑 この項目を削除</button>
+        )}
+      </div>
+    </div>
+  );
+
+  return (
+    <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",zIndex:100,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      <div onClick={e=>e.stopPropagation()} style={{background:C.bgCard,border:`1px solid ${C.gold}40`,borderRadius:18,padding:"22px 20px",width:"100%",maxWidth:400,maxHeight:"85vh",overflow:"auto"}}>
+        <div style={{fontSize:11,color:C.gold,fontWeight:700,letterSpacing:2,marginBottom:6}}>FIXED COSTS</div>
+        <div style={{fontSize:18,fontWeight:800,color:C.text,marginBottom:6,fontFamily:"'JetBrains Mono',monospace"}}>📋 固定費リスト</div>
+        <div style={{fontSize:11,color:C.textSub,marginBottom:16,lineHeight:1.5}}>家賃・リース・保険など毎月決まった支出を登録</div>
+
+        {costs.length === 0 && (
+          <div style={{background:C.bgDeep,borderRadius:10,padding:"20px",textAlign:"center",color:C.textSub,fontSize:12,border:`1px dashed ${C.border}`,marginBottom:12}}>
+            まだ登録されていません
+          </div>
+        )}
+
+        {costs.map(c => (
+          <button key={c.id} onClick={()=>setEditing(c)}
+            style={{width:"100%",background:C.bgDeep,border:`1px solid ${C.border}`,borderRadius:11,padding:"12px 14px",marginBottom:8,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",fontFamily:"inherit",textAlign:"left"}}>
+            <div>
+              <div style={{fontSize:13,fontWeight:700,color:C.text,marginBottom:3}}>{c.name || "(名称未入力)"}</div>
+              <div style={{fontSize:10,color:C.textSub}}>{c.category} · 毎月{c.day}日</div>
+            </div>
+            <div style={{fontSize:15,fontWeight:800,color:C.orange,fontFamily:"'JetBrains Mono',monospace"}}>{YEN(c.amount)}</div>
+          </button>
+        ))}
+
+        <button onClick={addNew} style={{width:"100%",background:"transparent",border:`1.5px dashed ${C.gold}`,borderRadius:12,padding:"12px",fontSize:13,fontWeight:700,color:C.gold,cursor:"pointer",marginTop:4,fontFamily:"inherit"}}>＋ 固定費を追加</button>
+
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginTop:16}}>
+          <button onClick={onClose} style={{background:"transparent",border:`1px solid ${C.border}`,borderRadius:11,padding:"12px",fontSize:13,fontWeight:600,color:C.textSub,cursor:"pointer",fontFamily:"inherit"}}>キャンセル</button>
+          <button onClick={save} style={{background:`linear-gradient(135deg,${C.gold},#b8882a)`,border:"none",borderRadius:11,padding:"12px",fontSize:13,fontWeight:700,color:C.bgDeep,cursor:"pointer",fontFamily:"inherit"}}>保存</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // LOGIN SCREEN
 // ══════════════════════════════════════════════════════════════════════════════
 function LoginScreen({ onLogin }) {
@@ -1509,6 +1983,7 @@ export default function App() {
   const [employees,setEmployees]=useState(saved?.employees || initEmployees);
   const [subcontractors,setSubcontractors]=useState(saved?.subcontractors || initSubcontractors);
   const [attendance,setAttendance]=useState(saved?.attendance || initAttendance);
+  const [cashflow,setCashflow]=useState(saved?.cashflow || initCashflow);
   const [showMenu,setShowMenu]=useState(false);
   const [showBackups,setShowBackups]=useState(false);
   const [toast,setToast]=useState("");
@@ -1538,9 +2013,10 @@ export default function App() {
         if (cloudData.employees) setEmployees(cloudData.employees);
         if (cloudData.subcontractors) setSubcontractors(cloudData.subcontractors);
         if (cloudData.attendance) setAttendance(cloudData.attendance);
+        if (cloudData.cashflow) setCashflow(cloudData.cashflow);
       } else {
         // No cloud data yet → push current local data
-        await saveToCloud(user.uid, {sites,employees,subcontractors,attendance});
+        await saveToCloud(user.uid, {sites,employees,subcontractors,attendance,cashflow});
       }
       setSyncStatus("synced");
       setInitialSyncDone(true);
@@ -1555,6 +2031,7 @@ export default function App() {
         if (cloudData.employees) setEmployees(cloudData.employees);
         if (cloudData.subcontractors) setSubcontractors(cloudData.subcontractors);
         if (cloudData.attendance) setAttendance(cloudData.attendance);
+        if (cloudData.cashflow) setCashflow(cloudData.cashflow);
       }
     });
     return () => { cancelled = true; unsub(); };
@@ -1562,7 +2039,7 @@ export default function App() {
 
   // Auto-save on any change + daily rolling backup + cloud sync
   useEffect(()=>{
-    const state = {sites,employees,subcontractors,attendance,updatedAt:Date.now()};
+    const state = {sites,employees,subcontractors,attendance,cashflow,updatedAt:Date.now()};
     saveState(state);
     autoBackup(state);
     if (user && initialSyncDone) {
@@ -1570,7 +2047,7 @@ export default function App() {
       debouncedSaveToCloud(user.uid, state);
       setTimeout(()=>setSyncStatus("synced"), 1500);
     }
-  },[sites,employees,subcontractors,attendance]);
+  },[sites,employees,subcontractors,attendance,cashflow]);
 
   // One-time integrity check on startup: repair duplicate IDs left behind by an
   // older version of the app (the first entry keeps its history, later duplicates
@@ -1634,6 +2111,7 @@ export default function App() {
       if (data.employees) setEmployees(data.employees);
       if (data.subcontractors) setSubcontractors(data.subcontractors);
       if (data.attendance) setAttendance(data.attendance);
+      if (data.cashflow) setCashflow(data.cashflow);
       showToast("✅ データを復元しました");
     } catch(err) { alert("読み込み失敗: "+err.message); }
     setShowMenu(false);
@@ -1642,6 +2120,7 @@ export default function App() {
     if (window.confirm("全データを初期状態に戻します。よろしいですか？")) {
       setSites(initSites); setEmployees(initEmployees);
       setSubcontractors(initSubcontractors); setAttendance(initAttendance);
+      setCashflow(initCashflow);
       showToast("🔄 初期データに戻しました");
       setShowMenu(false);
     }
@@ -1659,11 +2138,12 @@ export default function App() {
     if (data.employees) setEmployees(data.employees);
     if (data.subcontractors) setSubcontractors(data.subcontractors);
     if (data.attendance) setAttendance(data.attendance);
+    if (data.cashflow) setCashflow(data.cashflow);
     showToast(`✅ ${date} のバックアップに戻しました`);
     setShowBackups(false);
   };
 
-  const tabs=[["attendance","🗓","出勤"],["payroll","💴","給与"],["sites","🏗","現場"],["employees","👷","スタッフ"]];
+  const tabs=[["attendance","🗓","出勤"],["payroll","💴","給与"],["sites","🏗","現場"],["cashflow","💰","資金繰り"],["employees","👷","スタッフ"]];
 
   const handleLogout = async () => {
     if (!window.confirm("ログアウトしますか？")) return;
@@ -1717,6 +2197,7 @@ export default function App() {
           {tab==="attendance"&&<AttendanceTab sites={sites} employees={employees} subcontractors={subcontractors} attendance={attendance} setAttendance={setAttendance}/>}
           {tab==="payroll"&&<PayrollTab employees={employees} subcontractors={subcontractors} sites={sites} attendance={attendance}/>}
           {tab==="sites"&&<SitesTab sites={sites} setSites={setSites} attendance={attendance} employees={employees} subcontractors={subcontractors}/>}
+          {tab==="cashflow"&&<CashflowTab sites={sites} employees={employees} subcontractors={subcontractors} attendance={attendance} cashflow={cashflow} setCashflow={setCashflow}/>}
           {tab==="employees"&&<EmployeesTab employees={employees} setEmployees={setEmployees} subcontractors={subcontractors} setSubcontractors={setSubcontractors} attendance={attendance}/>}
         </div>
 
