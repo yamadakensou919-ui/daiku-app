@@ -263,28 +263,46 @@ function calcMonthlyCashflow({ monthsAhead, sites, employees, subcontractors, at
 
     // ── 収入: 現場の入金予定 ──
     sites.forEach(site => {
-      if (!site.month) return;
-      // sitePaymentOverrides に設定があればその日付、なければ完了月の defaultPaymentDay
-      const override = (cashflow.sitePaymentOverrides||{})[site.id];
-      let payDate;
-      if (override && override.date) {
-        payDate = override.date;
-      } else {
-        payDate = clampDayToMonth(site.month, cashflow.defaultPaymentDay || 25);
-      }
-      if (payDate.slice(0,7) === ym) {
-        const amount = +site.contractTax || Math.round((+site.contract||0) * 1.1);
-        if (amount > 0) {
+      const payments = Array.isArray(site.payments) ? site.payments : [];
+      if (payments.length > 0) {
+        // 複数回払い: 各入金を個別に計上（paid=trueは除外＝入金済み）
+        payments.forEach((p, pi) => {
+          if (p.paid) return;
+          if (!p.date || !p.amount) return;
+          if (p.date.slice(0,7) !== ym) return;
           income.push({
-            id: `site-${site.id}`,
-            date: payDate,
+            id: `site-${site.id}-p${p.id||pi}`,
+            date: p.date,
             name: site.name,
-            type: "現場入金（税込）",
-            amount,
+            type: p.label || "現場入金",
+            amount: +p.amount,
             auto: true,
-            editable: true,
             refId: site.id,
           });
+        });
+      } else {
+        // 旧データ互換: payments未設定の場合、完了月の設定日に税込金額を一括計上
+        if (!site.month) return;
+        const override = (cashflow.sitePaymentOverrides||{})[site.id];
+        let payDate;
+        if (override && override.date) {
+          payDate = override.date;
+        } else {
+          payDate = clampDayToMonth(site.month, cashflow.defaultPaymentDay || 25);
+        }
+        if (payDate.slice(0,7) === ym) {
+          const amount = +site.contractTax || Math.round((+site.contract||0) * 1.1);
+          if (amount > 0) {
+            income.push({
+              id: `site-${site.id}`,
+              date: payDate,
+              name: site.name,
+              type: "現場入金（税込・一括）",
+              amount,
+              auto: true,
+              refId: site.id,
+            });
+          }
         }
       }
     });
@@ -770,6 +788,27 @@ function SiteCard({site,onEdit,attendance,employees,subcontractors}) {
           {labor.scDays>0&&<div style={{display:"flex",alignItems:"center",gap:5,background:C.bgDeep,borderRadius:8,padding:"4px 10px",border:`1px solid ${C.border}`}}><GlowDot color={C.orange}/><span style={{fontSize:10,color:C.textSub}}>外注 {labor.scDays}人工 · {YEN(labor.scCost)}</span></div>}
         </div>
       )}
+      {(() => {
+        const pays = Array.isArray(site.payments) ? site.payments : [];
+        if (pays.length === 0) return null;
+        const paid = pays.filter(p => p.paid).reduce((a,p)=>a+(+p.amount||0),0);
+        const remain = pays.filter(p => !p.paid).reduce((a,p)=>a+(+p.amount||0),0);
+        const total = paid + remain;
+        const pct = total>0 ? paid/total : 0;
+        return (
+          <div style={{marginBottom:14}}>
+            <div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}>
+              <span style={{fontSize:10,color:C.textSub,letterSpacing:1}}>💵 入金 {pays.filter(p=>p.paid).length}/{pays.length}件</span>
+              <span style={{fontSize:11,fontWeight:700,color:C.green,fontFamily:"'JetBrains Mono',monospace"}}>
+                済 {YEN(paid)} / 残 {YEN(remain)}
+              </span>
+            </div>
+            <div style={{height:4,background:C.bgDeep,borderRadius:99,overflow:"hidden"}}>
+              <div style={{height:"100%",width:`${pct*100}%`,background:`linear-gradient(90deg,${C.green}88,${C.green})`,borderRadius:99,transition:"width 0.6s"}}/>
+            </div>
+          </div>
+        );
+      })()}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:14}}>
         <StatBox label="経費合計" value={YEN(totalCost)} color={C.orange}/>
         <StatBox label="粗利益" value={YEN(gross)} color={gc}/>
@@ -803,9 +842,155 @@ function SiteCard({site,onEdit,attendance,employees,subcontractors}) {
   );
 }
 
+// ── 入金予定エディタ（複数回払い対応） ──
+function PaymentsEditor({ payments, contractTax, contract, month, onChange }) {
+  const sum = payments.reduce((a,p)=>a+(+p.amount||0), 0);
+  const expectedTotal = +contractTax || Math.round((+contract||0)*1.1);
+  const remaining = expectedTotal - sum;
+
+  const addPayment = (preset) => {
+    const base = month ? `${month}-15` : todayStr();
+    const next = [...payments, {
+      id: uid("pay"),
+      date: base,
+      amount: preset?.amount || "",
+      label: preset?.label || `${payments.length+1}回目`,
+      paid: false,
+    }];
+    onChange(next);
+  };
+
+  const updatePayment = (idx, key, value) => {
+    const next = [...payments];
+    next[idx] = {...next[idx], [key]: value};
+    onChange(next);
+  };
+
+  const removePayment = (idx) => {
+    if (!window.confirm("この入金予定を削除しますか？")) return;
+    onChange(payments.filter((_,i)=>i!==idx));
+  };
+
+  // 件数指定で空の入金枠を複数まとめて追加（金額は手入力）
+  const createEmptySlots = (n) => {
+    const m = month || todayStr().slice(0,7);
+    const labels2 = ["前金", "完了金"];
+    const labels3 = ["着手金", "中間金", "完了金"];
+    const labels4 = ["着手金", "1回目中間金", "2回目中間金", "完了金"];
+    const labelsFor = (i, total) => {
+      if (total === 2) return labels2[i];
+      if (total === 3) return labels3[i];
+      if (total === 4) return labels4[i];
+      if (i === 0) return "着手金";
+      if (i === total - 1) return "完了金";
+      return `${i}回目`;
+    };
+    const next = Array.from({length:n}, (_, i) => ({
+      id: uid("pay"),
+      date: `${addMonths(m, i)}-15`,
+      amount: "",
+      label: labelsFor(i, n),
+      paid: false,
+    }));
+    onChange(next);
+  };
+
+  return (
+    <div style={{...s.card, borderColor: payments.length > 0 ? C.green+"60" : C.border}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+        <div style={{fontSize:11,color:C.gold,fontWeight:700,letterSpacing:1}}>💵 入金予定（出来高払い対応）</div>
+        <Tag color={payments.length>0?C.green:C.textSub}>{payments.length}件</Tag>
+      </div>
+
+      {payments.length === 0 && (
+        <div style={{background:C.bgDeep,borderRadius:10,padding:"14px",fontSize:12,color:C.textSub,lineHeight:1.6,marginBottom:12,border:`1px dashed ${C.border}`}}>
+          未設定の場合は、完了月の全体設定日に <b style={{color:C.text}}>税込金額が一括</b> で入金予定に計上されます。<br/>
+          出来高払いの場合は下のボタンで分割入金を登録してください。
+        </div>
+      )}
+
+      {payments.map((p, i) => (
+        <div key={p.id} style={{background:C.bgDeep,border:`1px solid ${p.paid?C.green+"60":C.border}`,borderRadius:12,padding:"12px 14px",marginBottom:10}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+            <input value={p.label||""} onChange={e=>updatePayment(i,"label",e.target.value)}
+              placeholder={`${i+1}回目`}
+              style={{flex:1,background:"transparent",border:"none",color:C.text,fontSize:13,fontWeight:700,outline:"none",fontFamily:"inherit"}}/>
+            <button onClick={()=>removePayment(i)}
+              style={{background:"transparent",border:"none",color:C.red,fontSize:16,cursor:"pointer",padding:"2px 6px"}}>🗑</button>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
+            <div>
+              <label style={{fontSize:9,color:C.textSub,letterSpacing:0.5,fontWeight:700,marginBottom:4,display:"block"}}>入金予定日</label>
+              <input type="date" value={p.date||""} onChange={e=>updatePayment(i,"date",e.target.value)}
+                style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,padding:"9px 10px",fontSize:13,color:C.text,outline:"none",boxSizing:"border-box",fontFamily:"inherit"}}/>
+            </div>
+            <div>
+              <label style={{fontSize:9,color:C.textSub,letterSpacing:0.5,fontWeight:700,marginBottom:4,display:"block"}}>金額（円）</label>
+              <input type="number" inputMode="numeric" value={p.amount||""} onChange={e=>updatePayment(i,"amount",e.target.value)}
+                placeholder="0"
+                style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,padding:"9px 10px",fontSize:13,color:C.text,outline:"none",boxSizing:"border-box",fontFamily:"inherit"}}/>
+            </div>
+          </div>
+          <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:11,color:p.paid?C.green:C.textSub,fontWeight:600}}>
+            <input type="checkbox" checked={!!p.paid} onChange={e=>updatePayment(i,"paid",e.target.checked)}
+              style={{width:16,height:16,accentColor:C.green,cursor:"pointer"}}/>
+            {p.paid ? "✓ 入金済み（資金繰りから除外）" : "入金済みにする"}
+          </label>
+        </div>
+      ))}
+
+      <button onClick={()=>addPayment()}
+        style={{width:"100%",background:"transparent",border:`1.5px dashed ${C.gold}`,borderRadius:10,padding:"11px",fontSize:13,fontWeight:700,color:C.gold,cursor:"pointer",marginBottom:10,fontFamily:"inherit"}}>
+        ＋ 入金予定を追加
+      </button>
+
+      {payments.length === 0 && (
+        <>
+          <div style={{fontSize:10,color:C.textSub,letterSpacing:1,marginBottom:6,fontWeight:700,textAlign:"center"}}>またはまとめて作成</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,marginBottom:8}}>
+            {[2,3,4,5].map(n => (
+              <button key={n} onClick={()=>createEmptySlots(n)}
+                style={{background:C.bgDeep,border:`1px solid ${C.border}`,borderRadius:10,padding:"10px 6px",fontSize:11,fontWeight:700,color:C.gold,cursor:"pointer",fontFamily:"inherit",display:"flex",flexDirection:"column",alignItems:"center",gap:2}}
+                onMouseEnter={e=>e.currentTarget.style.borderColor=C.gold}
+                onMouseLeave={e=>e.currentTarget.style.borderColor=C.border}>
+                <span style={{fontSize:14}}>{n}</span>
+                <span style={{fontSize:9,color:C.textSub,fontWeight:500}}>回分</span>
+              </button>
+            ))}
+          </div>
+          <div style={{fontSize:10,color:C.textDim,textAlign:"center",marginBottom:8,lineHeight:1.5}}>
+            日付は1ヶ月ずつずらして登録・金額は後から手入力
+          </div>
+        </>
+      )}
+
+      {payments.length > 0 && expectedTotal > 0 && (
+        <div style={{background:C.bgDeep,borderRadius:10,padding:"10px 14px",marginTop:4,border:`1px solid ${C.border}`}}>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:C.textSub,marginBottom:4}}>
+            <span>入金予定合計</span>
+            <span style={{color:C.text,fontWeight:700,fontFamily:"'JetBrains Mono',monospace"}}>{YEN(sum)}</span>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:C.textSub,marginBottom:4}}>
+            <span>税込請負金額</span>
+            <span style={{color:C.text,fontWeight:700,fontFamily:"'JetBrains Mono',monospace"}}>{YEN(expectedTotal)}</span>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:12,fontWeight:700,marginTop:6,paddingTop:6,borderTop:`1px solid ${C.border}`}}>
+            <span style={{color:Math.abs(remaining)<1?C.green:C.orange}}>
+              {Math.abs(remaining)<1?"✓ 一致":remaining>0?"残り":"超過"}
+            </span>
+            <span style={{color:Math.abs(remaining)<1?C.green:C.orange,fontFamily:"'JetBrains Mono',monospace"}}>
+              {Math.abs(remaining)<1?YEN(0):YEN(Math.abs(remaining))}
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SiteForm({site,onSave,onDelete,onClose,attendance,employees,subcontractors}) {
   const isNew=!site.id;
-  const [f,setF]=useState({name:"",month:todayStr().slice(0,7),contract:"",contractTax:"",材料費:"",外注費:"",交通費:"",消耗品:"",その他:"",...site});
+  const [f,setF]=useState({name:"",month:todayStr().slice(0,7),contract:"",contractTax:"",材料費:"",外注費:"",交通費:"",消耗品:"",その他:"",payments:[],...site});
   const [saving,setSaving]=useState(false);
   const set=k=>v=>setF(p=>({...p,[k]:v}));
   const labor=site.id?calcLaborBySite(site.id,attendance,employees,subcontractors):{empWage:0,scCost:0,total:0};
@@ -839,6 +1024,15 @@ function SiteForm({site,onSave,onDelete,onClose,attendance,employees,subcontract
           <FInput label="請負金額（税込）" value={f.contractTax} onChange={set("contractTax")} num
             hint={f.contract?`消費税: ${YEN(Math.round((+f.contractTax||0)-(+f.contract||0)))}`:undefined}/>
         </div>
+
+        {/* 入金予定（複数回対応・出来高払い） */}
+        <PaymentsEditor
+          payments={f.payments||[]}
+          contractTax={f.contractTax}
+          contract={f.contract}
+          month={f.month}
+          onChange={v=>set("payments")(v)}
+        />
 
         {/* 目標人工数（粗利30%確保のため） */}
         {(() => {
